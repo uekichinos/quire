@@ -71,8 +71,8 @@ if (!loXlsx) {
   console.error('LibreOffice produced no src.xlsx')
   process.exit(1)
 }
-const wb = readWorkbook(readFileSync(join(dir, loXlsx)))
-const rows = wb.sheets[0].values()
+const loWb = readWorkbook(readFileSync(join(dir, loXlsx)))
+const rows = loWb.sheets[0].values()
 console.log('--- direction 2: quire read LibreOffice .xlsx ---')
 console.log(rows)
 const flat = JSON.stringify(rows)
