@@ -125,6 +125,12 @@ for (const row of s.rows()) {            // sparse: row[col-1]
 (no leading `=`) and `.value` (the cached result). `{ sheets: [name|index] }`
 loads a subset.
 
+**Styles on read** — `readWorkbook(bytes, { styles: true })` resolves a
+`ReadStyle` onto each cell (`font`, `fill`, `border`, `align`, `numFmt`), mirror
+of the writer's `CellStyle`. `rgb` colours resolve exactly; indexed colours use
+the standard palette; theme colours are read from `xl/theme` (with the 0/1 swap
+and an approximate tint). Off by default — most imports only need values.
+
 **Deliberately strict and small.** The XML is parsed by a ~200-line in-house
 tokenizer (not a dependency) that rejects `<!DOCTYPE>`, `<!ENTITY>`, `<![CDATA[>`
 and unknown entities outright — the DOCTYPE / entity-expansion class that
@@ -132,11 +138,11 @@ accounts for most XML-parser CVEs does not apply. Only an allow-list of parts is
 extracted, with uncompressed-size caps enforced before and after inflation.
 Still: parse untrusted uploads inside a worker with an overall time/memory limit.
 
-**Not read** (yet): cell styles/formatting on read (opt-in, planned for `0.3.0`),
-data validation, conditional formatting, images, charts, pivot tables,
-hyperlinks, defined names. Reading is aimed at files from mainstream tools
-(Excel, Google Sheets, LibreOffice, `openpyxl`, `exceljs`, quire) — not corrupt
-files or every vendor quirk. See [`PLAN-READER.md`](./PLAN-READER.md).
+**Not read**: data validation, conditional formatting, images, charts, pivot
+tables, hyperlinks, defined names, column/row-level styles. Reading is aimed at
+files from mainstream tools (Excel, Google Sheets, LibreOffice, `openpyxl`,
+`exceljs`, quire) — not corrupt files or every vendor quirk. See
+[`PLAN-READER.md`](./PLAN-READER.md).
 
 ## Scope
 

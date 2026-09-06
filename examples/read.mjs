@@ -11,7 +11,7 @@ s.setCell('C4', { formula: 'SUM(C2:C3)', result: 17453.4 })
 s.merge('A6:D6')
 s.setCell('A6', 'end of report')
 
-const back = readWorkbook(wb.xlsx())
+const back = readWorkbook(wb.xlsx(), { styles: true })
 
 console.log('sheets:', back.sheetNames)
 const sheet = back.sheet('Sales')
@@ -21,3 +21,6 @@ for (const row of sheet.rows()) {
     row.map((c) => (c ? `${c.value}${c.formula ? ` (=${c.formula})` : ''} [${c.type}]` : '·')),
   )
 }
+
+console.log('\nA1 style:', JSON.stringify(sheet.cell('A1').style))
+console.log('C2 style:', JSON.stringify(sheet.cell('C2').style))

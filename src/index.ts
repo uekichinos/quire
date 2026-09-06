@@ -37,6 +37,9 @@ export type {
   ReadCell,
   ReadCellType,
   ReadOptions,
+  ReadStyle,
+  ReadFont,
+  ReadBorderEdge,
 } from './read'
 export { XlsxReadError } from './unzip'
 export { XmlError } from './xml-read'

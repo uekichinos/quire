@@ -1,8 +1,11 @@
 import { colLetter, parseRef } from './address'
 import { serialToDate } from './datetime'
 import { isDateNumFmt } from './numfmt'
+import { parseStyleSheet, type ReadStyle, type StyleSheet } from './style-read'
 import { DEFAULT_LIMITS, extractParts, XlsxReadError, type UnzipLimits } from './unzip'
 import { parseXml } from './xml-read'
+
+export type { ReadStyle, ReadFont, ReadBorderEdge } from './style-read'
 
 export type ReadCellType =
   | 'string'
@@ -23,6 +26,8 @@ export interface ReadCell {
   value: string | number | boolean | Date | null
   /** Present when the cell contains a formula (without the leading `=`). */
   formula?: string
+  /** Resolved cell style — only when `readWorkbook(bytes, { styles: true })`. */
+  style?: ReadStyle
 }
 
 export interface ReadOptions {
@@ -30,13 +35,9 @@ export interface ReadOptions {
   sheets?: (string | number)[]
   /** Convert numeric cells with a date number-format into `Date` objects. Default: `true`. */
   dates?: boolean
+  /** Resolve per-cell styles (font / fill / border / alignment / numFmt). Default: `false`. */
+  styles?: boolean
   limits?: Partial<UnzipLimits>
-}
-
-/** Style info needed to classify cells — `cellXfs[s]` → numFmtId, plus custom codes. */
-interface StyleInfo {
-  xfNumFmtId: number[]
-  customCode: Map<number, string>
 }
 
 export interface ReadWorksheet {
@@ -103,30 +104,6 @@ function parseWorkbookRels(xml: string): Map<string, string> {
   return rels
 }
 
-function parseStyles(xml: string): StyleInfo {
-  const customCode = new Map<number, string>()
-  const xfNumFmtId: number[] = []
-  let inCellXfs = false
-  parseXml(xml, {
-    onOpen(name, attrs) {
-      if (name === 'numFmt') {
-        const id = Number(attrs.numFmtId)
-        if (Number.isInteger(id) && attrs.formatCode !== undefined) {
-          customCode.set(id, attrs.formatCode)
-        }
-      } else if (name === 'cellXfs') {
-        inCellXfs = true
-      } else if (name === 'xf' && inCellXfs) {
-        xfNumFmtId.push(Number(attrs.numFmtId ?? 0) || 0)
-      }
-    },
-    onClose(name) {
-      if (name === 'cellXfs') inCellXfs = false
-    },
-  })
-  return { xfNumFmtId, customCode }
-}
-
 function parseSharedStrings(xml: string): string[] {
   const list: string[] = []
   let current: string[] | null = null
@@ -160,12 +137,13 @@ interface RawSheet {
 
 interface SheetParseCtx {
   sst: string[]
-  styles: StyleInfo | null
+  styles: StyleSheet | null
   date1904: boolean
   dates: boolean
+  withStyles: boolean
 }
 
-function isDateStyle(styleIdx: number, styles: StyleInfo | null): boolean {
+function isDateStyle(styleIdx: number, styles: StyleSheet | null): boolean {
   if (!styles) return false
   const numFmtId = styles.xfNumFmtId[styleIdx]
   if (numFmtId === undefined) return false
@@ -173,7 +151,7 @@ function isDateStyle(styleIdx: number, styles: StyleInfo | null): boolean {
 }
 
 function parseSheet(xml: string, ctx: SheetParseCtx): RawSheet {
-  const { sst, styles, date1904, dates } = ctx
+  const { sst, styles, date1904, dates, withStyles } = ctx
   const cells = new Map<number, Map<number, ReadCell>>()
   const merges: string[] = []
   let maxRow = 0
@@ -246,6 +224,10 @@ function parseSheet(xml: string, ctx: SheetParseCtx): RawSheet {
 
     const cell: ReadCell = { ref, row: curRow, col: curCol, type, value }
     if (hasFormula && fBuf) cell.formula = fBuf.replace(/^=/, '')
+    if (withStyles && styles && cStyle >= 0) {
+      const st = styles.xfStyle[cStyle]
+      if (st && Object.keys(st).length) cell.style = st
+    }
 
     let line = cells.get(curRow)
     if (!line) {
@@ -418,12 +400,25 @@ export function readWorkbook(
   const sst = parts.has('xl/sharedstrings.xml')
     ? parseSharedStrings(parts.get('xl/sharedstrings.xml')!)
     : []
-  const styles = parts.has('xl/styles.xml') ? parseStyles(parts.get('xl/styles.xml')!) : null
+  const withStyles = options.styles === true
+  let themeXml: string | undefined
+  if (withStyles) {
+    for (const [name, xml] of parts) {
+      if (name.startsWith('xl/theme/')) {
+        themeXml = xml
+        break
+      }
+    }
+  }
+  const styles = parts.has('xl/styles.xml')
+    ? parseStyleSheet(parts.get('xl/styles.xml')!, { withStyles, themeXml })
+    : null
   const ctx: SheetParseCtx = {
     sst,
     styles,
     date1904,
     dates: options.dates !== false,
+    withStyles,
   }
 
   const wanted = options.sheets

@@ -228,12 +228,13 @@ writer.
 **both directions** through LibreOffice (quire writes → LO reads; LO writes →
 quire reads). 172 tests.
 
-### R3 — styles on read ⏳ next, targeting `0.3.0`
-`{ styles: true }`: parse `fonts` / `fills` / `borders` from `styles.xml` and
-resolve font / fill / border / alignment / numFmt per cell into a `ReadStyle`
-(indexed + theme colours are the reverse of the writer's pool); column & row
-styles; round-trip styles vs the writer. Deliberately kept out of `0.2.0` —
-opt-in, and most imports don't need it.
+### R3 — styles on read ✅ done (unreleased, ships as `0.3.0`)
+`src/style-read.ts`: parses `styles.xml` fonts / fills / borders / `cellXfs`;
+`{ styles: true }` resolves a `ReadStyle` (font / fill / border / align / numFmt)
+per cell. Colours: `rgb` exact, `indexed` via the standard palette, `theme` from
+`xl/theme/*` with the 0/1 & 2/3 swap and an approximate tint. Sheet-default ids
+(0) not surfaced. Round-trips vs the writer. 11 tests, 183 total.
+**Deferred to a later minor:** column- and row-level styles on read.
 
 ---
 

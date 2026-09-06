@@ -2,6 +2,23 @@
 
 All notable changes to `@uekichinos/quire` are documented here.
 
+## [Unreleased]
+
+### Styles on read
+- `readWorkbook(bytes, { styles: true })` resolves a `ReadStyle` onto each
+  `ReadCell` — `font` (name / size / bold / italic / underline / colour),
+  `fill`, `border` (per edge), `align`, `numFmt` — mirroring the writer's
+  `CellStyle` so styles round-trip
+- `src/style-read.ts` parses `styles.xml` fonts / fills / borders / `cellXfs`
+  and resolves colours: `rgb` exactly, `indexed` via the standard palette,
+  `theme` from `xl/theme/*` (the 0/1 & 2/3 swap, approximate HSL tint)
+- built-in number-format ids resolve to their codes; `id 0` (`General`) and
+  the sheet-default font/fill/border (`id 0`) are not surfaced as explicit style
+- `xl/theme/*` added to the extraction allow-list; still **one runtime
+  dependency**
+- off by default (values-only path is unchanged and faster)
+- 11 new tests: write → read style round-trips, indexed & theme colours (183 total)
+
 ## [0.2.0] - 2026-09-06
 
 Adds `.xlsx` **reading**. Still **one runtime dependency** (`fflate`).
