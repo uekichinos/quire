@@ -2,6 +2,27 @@
 
 All notable changes to `@uekichinos/quire` are documented here.
 
+## [Unreleased] — reading (targeting 0.2.0)
+
+### R1 — tokenizer, safe unzip, values
+- **`readWorkbook(bytes | ArrayBuffer, options?)`** → `ReadWorkbook`
+  (`sheetNames`, `sheets`, `sheet(name | index)`, `date1904`)
+- `ReadWorksheet`: `name`, `dimension`, `merges`, `cell(ref)`, `rows()` (sparse),
+  `toArray()` / `values()` (rectangular)
+- `ReadCell`: `{ ref, row, col, type, value, formula? }` — string (shared +
+  inline), number, boolean, formula (+ cached value), error, empty
+- `src/xml-read.ts` — a strict ~200-line XML tokenizer written in place of a
+  dependency after a CVE review of `fast-xml-parser` (13 advisories, most in the
+  DOCTYPE / entity-expansion class this reader is exposed to). It **rejects**
+  `<!DOCTYPE>` / `<!ENTITY>` / `<![CDATA[>` / unknown entities on sight, has no
+  entity expansion, caps nesting depth, and guards object keys against
+  `__proto__` pollution
+- `src/unzip.ts` — extracts only an allow-list of parts, enforces
+  total / per-part uncompressed-size caps from the ZIP directory before *and*
+  after inflation, ignores traversal (`..`) entries
+- quire stays at **one runtime dependency** (`fflate`)
+- 36 new tests, incl. write → read round-trips and a hostile-input suite
+
 ## [0.1.0] - 2026-09-06
 
 First release. A dependency-light `.xlsx` **writer** — one runtime dependency
