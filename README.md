@@ -1,17 +1,17 @@
 # @uekichinos/quire
 
-[![Socket Badge](https://badge.socket.dev/npm/package/@uekichinos/quire/0.2.0)](https://socket.dev/npm/package/@uekichinos/quire/overview/0.1.0)
+[![Socket Badge](https://badge.socket.dev/npm/package/@uekichinos/quire/0.2.0)](https://socket.dev/npm/package/@uekichinos/quire/overview/0.2.0)
 
-A small, dependency-light `.xlsx` **writer** for Node and the browser.
+A small, dependency-light `.xlsx` **reader + writer** for Node and the browser.
 
 - **One runtime dependency** — [`fflate`](https://github.com/101arrowz/fflate) for zip packaging
-- **Writer only** — no OOXML reader, so none of the parser-side CVE surface
-  (zip bombs, path traversal, prototype pollution) that affects reader libraries
-- Worksheets · typed cells (string / number / boolean / `Date` / formula) ·
+- **Write:** worksheets · typed cells (string / number / boolean / `Date` / formula) ·
   a de-duplicated style pool · merged cells · column widths · freeze panes ·
-  auto-filter · row heights
-- Returns a `Uint8Array` (or `Blob`); identical in Node and the browser
-- Deterministic output (stable bytes for stable input)
+  auto-filter · row heights. Deterministic `Uint8Array` / `Blob` output
+- **Read:** values, dates, formulas (+ cached result), merges — via an in-house
+  strict XML tokenizer, not a dependency, so the DOCTYPE / entity-expansion
+  class behind most XML-parser CVEs doesn't apply
+- Identical in Node and the browser
 
 ## Install
 
