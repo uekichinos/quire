@@ -1,8 +1,17 @@
 import { colLetter, parseRef } from './address'
+import { serialToDate } from './datetime'
+import { isDateNumFmt } from './numfmt'
 import { DEFAULT_LIMITS, extractParts, XlsxReadError, type UnzipLimits } from './unzip'
 import { parseXml } from './xml-read'
 
-export type ReadCellType = 'string' | 'number' | 'boolean' | 'formula' | 'error' | 'empty'
+export type ReadCellType =
+  | 'string'
+  | 'number'
+  | 'boolean'
+  | 'date'
+  | 'formula'
+  | 'error'
+  | 'empty'
 
 export interface ReadCell {
   /** A1 reference, e.g. `'B2'`. */
@@ -11,7 +20,7 @@ export interface ReadCell {
   col: number
   type: ReadCellType
   /** The cell's value. For `formula` cells this is the cached result. */
-  value: string | number | boolean | null
+  value: string | number | boolean | Date | null
   /** Present when the cell contains a formula (without the leading `=`). */
   formula?: string
 }
@@ -19,7 +28,15 @@ export interface ReadCell {
 export interface ReadOptions {
   /** Restrict to these sheets (by name or 0-based index). Default: all. */
   sheets?: (string | number)[]
+  /** Convert numeric cells with a date number-format into `Date` objects. Default: `true`. */
+  dates?: boolean
   limits?: Partial<UnzipLimits>
+}
+
+/** Style info needed to classify cells — `cellXfs[s]` → numFmtId, plus custom codes. */
+interface StyleInfo {
+  xfNumFmtId: number[]
+  customCode: Map<number, string>
 }
 
 export interface ReadWorksheet {
@@ -35,7 +52,7 @@ export interface ReadWorksheet {
   /** Rectangular `ReadCell[][]` (row 1..maxRow × col 1..maxCol), holes `undefined`. */
   toArray(): ReadCell[][]
   /** Rectangular values only — `null` for empty cells. */
-  values(): (string | number | boolean | null)[][]
+  values(): (string | number | boolean | Date | null)[][]
 }
 
 export interface ReadWorkbook {
@@ -86,6 +103,30 @@ function parseWorkbookRels(xml: string): Map<string, string> {
   return rels
 }
 
+function parseStyles(xml: string): StyleInfo {
+  const customCode = new Map<number, string>()
+  const xfNumFmtId: number[] = []
+  let inCellXfs = false
+  parseXml(xml, {
+    onOpen(name, attrs) {
+      if (name === 'numFmt') {
+        const id = Number(attrs.numFmtId)
+        if (Number.isInteger(id) && attrs.formatCode !== undefined) {
+          customCode.set(id, attrs.formatCode)
+        }
+      } else if (name === 'cellXfs') {
+        inCellXfs = true
+      } else if (name === 'xf' && inCellXfs) {
+        xfNumFmtId.push(Number(attrs.numFmtId ?? 0) || 0)
+      }
+    },
+    onClose(name) {
+      if (name === 'cellXfs') inCellXfs = false
+    },
+  })
+  return { xfNumFmtId, customCode }
+}
+
 function parseSharedStrings(xml: string): string[] {
   const list: string[] = []
   let current: string[] | null = null
@@ -117,7 +158,22 @@ interface RawSheet {
   merges: string[]
 }
 
-function parseSheet(xml: string, sst: string[]): RawSheet {
+interface SheetParseCtx {
+  sst: string[]
+  styles: StyleInfo | null
+  date1904: boolean
+  dates: boolean
+}
+
+function isDateStyle(styleIdx: number, styles: StyleInfo | null): boolean {
+  if (!styles) return false
+  const numFmtId = styles.xfNumFmtId[styleIdx]
+  if (numFmtId === undefined) return false
+  return isDateNumFmt(numFmtId, styles.customCode.get(numFmtId))
+}
+
+function parseSheet(xml: string, ctx: SheetParseCtx): RawSheet {
+  const { sst, styles, date1904, dates } = ctx
   const cells = new Map<number, Map<number, ReadCell>>()
   const merges: string[] = []
   let maxRow = 0
@@ -129,6 +185,7 @@ function parseSheet(xml: string, sst: string[]): RawSheet {
   let curCol = 0
   let cRef = ''
   let cType = ''
+  let cStyle = -1
   let hasFormula = false
   let vBuf = ''
   let fBuf = ''
@@ -149,7 +206,7 @@ function parseSheet(xml: string, sst: string[]): RawSheet {
     const ref = cRef || `${colLetter(curCol)}${curRow}`
 
     let type: ReadCellType
-    let value: string | number | boolean | null
+    let value: string | number | boolean | Date | null
 
     if (hasFormula) {
       type = 'formula'
@@ -177,8 +234,14 @@ function parseSheet(xml: string, sst: string[]): RawSheet {
       value = null
       type = 'empty'
     } else {
-      value = Number(vBuf)
-      type = 'number'
+      const num = Number(vBuf)
+      if (dates && cStyle >= 0 && Number.isFinite(num) && isDateStyle(cStyle, styles)) {
+        value = serialToDate(num, date1904)
+        type = 'date'
+      } else {
+        value = num
+        type = 'number'
+      }
     }
 
     const cell: ReadCell = { ref, row: curRow, col: curCol, type, value }
@@ -207,14 +270,17 @@ function parseSheet(xml: string, sst: string[]): RawSheet {
           curRow = attrs.r ? Number(attrs.r) : lastRow + 1
           curCol = 0
           break
-        case 'c':
+        case 'c': {
           cRef = attrs.r ?? ''
           cType = attrs.t ?? ''
+          const s = Number(attrs.s)
+          cStyle = Number.isInteger(s) && s >= 0 ? s : -1
           hasFormula = false
           vBuf = ''
           fBuf = ''
           isBuf = ''
           break
+        }
         case 'v':
           inV = true
           break
@@ -315,9 +381,9 @@ class Worksheet implements ReadWorksheet {
     return out
   }
 
-  values(): (string | number | boolean | null)[][] {
+  values(): (string | number | boolean | Date | null)[][] {
     return this.toArray().map((row) => {
-      const out: (string | number | boolean | null)[] = new Array(this.maxCol).fill(null)
+      const out: (string | number | boolean | Date | null)[] = new Array(this.maxCol).fill(null)
       for (let c = 0; c < this.maxCol; c++) if (row[c]) out[c] = row[c]!.value
       return out
     })
@@ -352,6 +418,13 @@ export function readWorkbook(
   const sst = parts.has('xl/sharedstrings.xml')
     ? parseSharedStrings(parts.get('xl/sharedstrings.xml')!)
     : []
+  const styles = parts.has('xl/styles.xml') ? parseStyles(parts.get('xl/styles.xml')!) : null
+  const ctx: SheetParseCtx = {
+    sst,
+    styles,
+    date1904,
+    dates: options.dates !== false,
+  }
 
   const wanted = options.sheets
   const shouldLoad = (name: string, index: number): boolean =>
@@ -363,7 +436,7 @@ export function readWorkbook(
     const target = rels.get(sr.rid) ?? `xl/worksheets/sheet${index + 1}.xml`
     const xml = parts.get(target.toLowerCase())
     if (!xml) throw new XlsxReadError(`worksheet part "${target}" for sheet "${sr.name}" is missing`)
-    const raw = parseSheet(xml, sst)
+    const raw = parseSheet(xml, ctx)
     built.push(new Worksheet(sr.name, raw.cells, raw.maxRow, raw.maxCol, raw.merges, raw.dimRef))
   })
 

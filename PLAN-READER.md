@@ -216,19 +216,24 @@ and empty cells; `merges`; `dimension`; positional fallback for missing `r`;
 `{ sheets: [...] }` subset. 36 tests incl. round-trip + hostile input.
 (Formulas / errors / inline / merges were pulled forward from R2.)
 
-### R2 — dates (2 days)
-`styles.xml` `numFmts` + `cellXfs → numFmtId` map; date-format classification
-(built-in ids 14–22 / 45–47 + custom-code token scan); serial → `Date` (1900 +
-phantom leap day, 1904 mode); `{ dates: false }` opt-out; add `'date'` to
-`ReadCellType`. Round-trip dates vs the writer.
+### R2 — dates ✅ done
+`serialToDate()` (1900 + phantom leap day, 1904); `isDateNumFmt()` (built-in ids
++ custom-code token scan, ignoring quoted/bracketed literals); `styles.xml`
+`numFmts` + `cellXfs → numFmtId` map; numeric cells with a date format → `Date`;
+`{ dates: false }` opt-out; `'date'` added to `ReadCellType`. Round-trips vs the
+writer.
 
-### R3 — styles, opt-in (2–3 days)
-`{ styles: true }`: resolve font / fill / border / alignment per cell into
-`ReadStyle`; column & row styles. Round-trip styles vs writer.
+### R4 — ship ✅ done — **published as `0.2.0`**
+`examples/read.mjs`; README reader section; `CHANGELOG` `0.2.0`; CI round-trips
+**both directions** through LibreOffice (quire writes → LO reads; LO writes →
+quire reads). 172 tests.
 
-### R4 — hardening + fixtures + docs (2–3 days)
-Security fixture suite; multi-tool corpus; malformed-input tests; README reader
-section; `CHANGELOG` `0.2.0`. Ship.
+### R3 — styles on read ⏳ next, targeting `0.3.0`
+`{ styles: true }`: parse `fonts` / `fills` / `borders` from `styles.xml` and
+resolve font / fill / border / alignment / numFmt per cell into a `ReadStyle`
+(indexed + theme colours are the reverse of the writer's pool); column & row
+styles; round-trip styles vs the writer. Deliberately kept out of `0.2.0` —
+opt-in, and most imports don't need it.
 
 ---
 

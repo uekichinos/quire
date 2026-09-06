@@ -51,3 +51,42 @@ const BUILTIN_BY_CODE = new Map<string, number>(
 export function builtinNumFmtId(code: string): number | undefined {
   return BUILTIN_BY_CODE.get(code)
 }
+
+/** Built-in number-format ids that render a date and/or time. */
+const BUILTIN_DATE_IDS = new Set([14, 15, 16, 17, 18, 19, 20, 21, 22, 45, 46, 47])
+
+/**
+ * Whether a number-format id / code produces a date or time — used on **read**
+ * to decide if a numeric cell should become a `Date`.
+ *
+ * Built-in ids use a fixed table. For a custom code, scans for a date/time
+ * token (`y m d h s`) that is not inside a `"…"` literal, a `[…]` section
+ * (colours, locales, `[h]` elapsed), or `\`-escaped.
+ */
+export function isDateNumFmt(id: number, code?: string): boolean {
+  if (id === 0) return false
+  if (BUILTIN_DATE_IDS.has(id)) return true
+  if (id < FIRST_CUSTOM_NUMFMT_ID || !code) return false
+
+  let inQuote = false
+  let inBracket = false
+  for (let i = 0; i < code.length; i++) {
+    const c = code[i]!
+    if (inQuote) {
+      if (c === '"') inQuote = false
+      continue
+    }
+    if (inBracket) {
+      if (c === ']') inBracket = false
+      continue
+    }
+    if (c === '"') inQuote = true
+    else if (c === '[') inBracket = true
+    else if (c === '\\') i++ // skip the escaped char
+    else if (c === 'y' || c === 'Y' || c === 'd' || c === 'D') return true
+    else if (c === 'm' || c === 'M' || c === 'h' || c === 'H' || c === 's' || c === 'S') {
+      return true
+    }
+  }
+  return false
+}
