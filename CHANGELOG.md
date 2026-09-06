@@ -2,26 +2,40 @@
 
 All notable changes to `@uekichinos/quire` are documented here.
 
-## [Unreleased] — reading (targeting 0.2.0)
+## [0.2.0] - 2026-09-06
 
-### R1 — tokenizer, safe unzip, values
-- **`readWorkbook(bytes | ArrayBuffer, options?)`** → `ReadWorkbook`
-  (`sheetNames`, `sheets`, `sheet(name | index)`, `date1904`)
+Adds `.xlsx` **reading**. Still **one runtime dependency** (`fflate`).
+
+### `readWorkbook(bytes | ArrayBuffer, options?)`
+- → `ReadWorkbook`: `sheetNames`, `sheets`, `sheet(name | index)`, `date1904`
 - `ReadWorksheet`: `name`, `dimension`, `merges`, `cell(ref)`, `rows()` (sparse),
   `toArray()` / `values()` (rectangular)
-- `ReadCell`: `{ ref, row, col, type, value, formula? }` — string (shared +
-  inline), number, boolean, formula (+ cached value), error, empty
-- `src/xml-read.ts` — a strict ~200-line XML tokenizer written in place of a
-  dependency after a CVE review of `fast-xml-parser` (13 advisories, most in the
-  DOCTYPE / entity-expansion class this reader is exposed to). It **rejects**
-  `<!DOCTYPE>` / `<!ENTITY>` / `<![CDATA[>` / unknown entities on sight, has no
-  entity expansion, caps nesting depth, and guards object keys against
-  `__proto__` pollution
-- `src/unzip.ts` — extracts only an allow-list of parts, enforces
-  total / per-part uncompressed-size caps from the ZIP directory before *and*
-  after inflation, ignores traversal (`..`) entries
-- quire stays at **one runtime dependency** (`fflate`)
-- 36 new tests, incl. write → read round-trips and a hostile-input suite
+- `ReadCell`: `{ ref, row, col, type, value, formula? }`
+- Cell types: string (shared + inline), number, **date** (numeric cells with a
+  date number-format → `Date`; `{ dates: false }` to opt out), boolean,
+  **formula** (with `.formula` + cached `.value`), error, empty
+- `serialToDate()` — inverse of `dateToSerial`, incl. the 1900 phantom leap day
+  and 1904 mode; `isDateNumFmt()` classifies built-in and custom format codes
+- `{ sheets: [name | index] }` loads a subset; positional fallback for writers
+  that omit `r` attributes
+
+### Security
+- `src/xml-read.ts` — a strict ~200-line XML tokenizer, written **instead of a
+  dependency** after a CVE review of `fast-xml-parser` (13 advisories, most in
+  the DOCTYPE / entity-expansion class a reader is exposed to). It **rejects**
+  `<!DOCTYPE>` / `<!ENTITY>` / `<![CDATA[>` / unknown entities outright, does no
+  entity expansion, caps nesting depth, and guards keys against `__proto__`
+  pollution
+- `src/unzip.ts` — extracts only an allow-list of parts, enforces total and
+  per-part uncompressed-size caps against the ZIP directory before *and* after
+  inflation, ignores `..` traversal entries
+- CI now round-trips **both directions** through LibreOffice (quire writes → LO
+  reads; LO writes → quire reads)
+- 54 new tests incl. write → read round-trips and a hostile-input suite (172 total)
+
+### Not read (yet)
+Cell styles on read (`0.3.0`), data validation, conditional formatting, images,
+charts, pivot tables, hyperlinks, defined names, `.xls` / `.xlsb`.
 
 ## [0.1.0] - 2026-09-06
 

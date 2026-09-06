@@ -1,6 +1,7 @@
-// CI gate: generate a workbook, convert it with headless LibreOffice, and
-// assert the values survived. Fails loudly if LibreOffice reports an error or
-// the converted CSV is missing expected data.
+// CI gate. Two directions, both through headless LibreOffice:
+//   1. quire writes .xlsx  → LibreOffice reads it (convert to CSV), values survive
+//   2. LibreOffice writes .xlsx (from CSV) → quire reads it, values survive
+// Fails loudly on any LibreOffice error or missing data.
 //
 //   node scripts/roundtrip.mjs
 //
@@ -9,7 +10,7 @@ import { execFileSync } from 'node:child_process'
 import { mkdtempSync, readFileSync, writeFileSync, readdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { createWorkbook } from '../dist/index.js'
+import { createWorkbook, readWorkbook } from '../dist/index.js'
 
 const dir = mkdtempSync(join(tmpdir(), 'quire-'))
 const xlsx = join(dir, 'roundtrip.xlsx')
@@ -44,7 +45,7 @@ if (!csvName) {
   process.exit(1)
 }
 const csv = readFileSync(join(dir, csvName), 'utf8')
-console.log('--- converted CSV ---\n' + csv)
+console.log('--- direction 1: LibreOffice read our .xlsx ---\n' + csv)
 
 const required = ['Product', 'Widget', '1200', '15003.4', 'Gadget', 'Total']
 const missing = required.filter((token) => !csv.includes(token))
@@ -52,4 +53,34 @@ if (missing.length) {
   console.error('CSV is missing expected values:', missing)
   process.exit(1)
 }
-console.log('\nroundtrip OK')
+
+// --- direction 2: LibreOffice writes an .xlsx, quire reads it ------------------
+const srcCsv = join(dir, 'src.csv')
+writeFileSync(srcCsv, 'Name,Qty,Price\nAlpha,3,1.5\nBravo,10,2\nCharlie,0,9.99\n')
+try {
+  execFileSync(bin, ['--headless', '--convert-to', 'xlsx', '--outdir', dir, srcCsv], {
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'pipe'],
+  })
+} catch (err) {
+  console.error('LibreOffice csv→xlsx failed:\n', err.stderr || err.message)
+  process.exit(1)
+}
+const loXlsx = readdirSync(dir).find((f) => f === 'src.xlsx')
+if (!loXlsx) {
+  console.error('LibreOffice produced no src.xlsx')
+  process.exit(1)
+}
+const wb = readWorkbook(readFileSync(join(dir, loXlsx)))
+const rows = wb.sheets[0].values()
+console.log('--- direction 2: quire read LibreOffice .xlsx ---')
+console.log(rows)
+const flat = JSON.stringify(rows)
+for (const token of ['"Name"', '"Alpha"', '3', '1.5', '"Charlie"', '9.99']) {
+  if (!flat.includes(token)) {
+    console.error('quire read of LibreOffice output is missing:', token)
+    process.exit(1)
+  }
+}
+
+console.log('\nroundtrip OK (both directions)')

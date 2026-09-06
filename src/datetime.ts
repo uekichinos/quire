@@ -8,6 +8,7 @@
  */
 
 const EPOCH_1900_UTC = Date.UTC(1899, 11, 31)
+const EPOCH_1904_UTC = Date.UTC(1904, 0, 1)
 const DAY_MS = 86_400_000
 
 /** `Date → Excel serial number`. Uses the date's **local** calendar fields. */
@@ -36,4 +37,25 @@ export function dateToSerial(date: Date): number {
     date.getMilliseconds()
 
   return days + msIntoDay / DAY_MS
+}
+
+/**
+ * `Excel serial number → Date` — the inverse of `dateToSerial`. The returned
+ * `Date` carries the spreadsheet's calendar date/time in its **local** fields
+ * (spreadsheets have no timezone), so it round-trips with `dateToSerial`.
+ */
+export function serialToDate(serial: number, date1904 = false): Date {
+  if (!Number.isFinite(serial)) {
+    throw new Error('@uekichinos/quire: invalid date serial')
+  }
+
+  let whole = Math.floor(serial)
+  const frac = serial - whole
+
+  if (!date1904 && whole >= 60) whole -= 1 // undo Excel's phantom 1900-02-29
+
+  const dayUtc = (date1904 ? EPOCH_1904_UTC : EPOCH_1900_UTC) + whole * DAY_MS
+  const d = new Date(dayUtc)
+  const localMidnight = new Date(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate())
+  return new Date(localMidnight.getTime() + Math.round(frac * DAY_MS))
 }

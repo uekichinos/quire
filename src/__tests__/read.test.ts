@@ -97,6 +97,31 @@ describe('readWorkbook — round-trips the writer', () => {
     expect(back.sheetNames).toEqual(['A', 'C'])
   })
 
+  it('reads Date cells back as Date objects', () => {
+    const wb = roundTrip((w) => {
+      const s = w.addWorksheet('S')
+      s.addRow([new Date(2024, 2, 1), 'not a date', 42])
+      s.addRow([{ value: new Date(2024, 2, 1, 9, 30), style: { numFmt: 'yyyy-mm-dd hh:mm' } }])
+    })
+    const s = wb.sheet('S')!
+    const a1 = s.cell('A1')!
+    expect(a1.type).toBe('date')
+    expect(a1.value).toBeInstanceOf(Date)
+    expect((a1.value as Date).getTime()).toBe(new Date(2024, 2, 1).getTime())
+    expect(s.cell('B1')!.type).toBe('string')
+    expect(s.cell('C1')!.type).toBe('number')
+    expect((s.cell('A2')!.value as Date).getTime()).toBe(new Date(2024, 2, 1, 9, 30).getTime())
+  })
+
+  it('{ dates: false } keeps date cells as numbers', () => {
+    const wb = createWorkbook()
+    wb.addWorksheet('S').addRow([new Date(2024, 2, 1)])
+    const back = readWorkbook(wb.xlsx(), { dates: false })
+    const c = back.sheet('S')!.cell('A1')!
+    expect(c.type).toBe('number')
+    expect(c.value).toBe(45352)
+  })
+
   it('accepts an ArrayBuffer', () => {
     const wb = createWorkbook()
     wb.addWorksheet('S').addRow(['x'])

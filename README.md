@@ -99,21 +99,57 @@ nested level deep.
 
 Run `node examples/hello.mjs` (after `pnpm build`) for a full example.
 
+## Reading (`0.2.0`)
+
+```js
+import { readWorkbook } from '@uekichinos/quire'
+
+const wb = readWorkbook(bytes)          // Uint8Array | ArrayBuffer
+
+wb.sheetNames                            // ['Sales', …]
+const s = wb.sheet('Sales')             // by name or index
+
+s.dimension                              // { rows, cols }
+s.merges                                 // ['A1:C1', …]
+s.cell('B2')                             // { ref, row, col, type, value, formula? }
+s.values()                               // (string|number|boolean|Date|null)[][]
+
+for (const row of s.rows()) {            // sparse: row[col-1]
+  console.log(row.map((c) => c?.value))
+}
+```
+
+`ReadCell.type` is `'string' | 'number' | 'boolean' | 'date' | 'formula' |
+'error' | 'empty'`. Numbers with a date format become `Date` (opt out with
+`readWorkbook(bytes, { dates: false })`). Formula cells carry both `.formula`
+(no leading `=`) and `.value` (the cached result). `{ sheets: [name|index] }`
+loads a subset.
+
+**Deliberately strict and small.** The XML is parsed by a ~200-line in-house
+tokenizer (not a dependency) that rejects `<!DOCTYPE>`, `<!ENTITY>`, `<![CDATA[>`
+and unknown entities outright — the DOCTYPE / entity-expansion class that
+accounts for most XML-parser CVEs does not apply. Only an allow-list of parts is
+extracted, with uncompressed-size caps enforced before and after inflation.
+Still: parse untrusted uploads inside a worker with an overall time/memory limit.
+
+**Not read** (yet): cell styles/formatting on read (opt-in, planned for `0.3.0`),
+data validation, conditional formatting, images, charts, pivot tables,
+hyperlinks, defined names. Reading is aimed at files from mainstream tools
+(Excel, Google Sheets, LibreOffice, `openpyxl`, `exceljs`, quire) — not corrupt
+files or every vendor quirk. See [`PLAN-READER.md`](./PLAN-READER.md).
+
 ## Scope
 
-`quire` is **not** a drop-in ExcelJS replacement. It targets the common
-"export a styled spreadsheet" case with a tiny, auditable surface.
-
-**Not included** (see [`PLAN.md`](./PLAN.md)): reading `.xlsx`, images, charts,
-pivot tables, data validation, conditional formatting, rich text, a streaming
-writer, `.xls` / `.xlsb`. A minimal reader for files from mainstream tools may
-come later.
+`quire` is **not** a drop-in ExcelJS replacement. The **writer** covers the
+common "export a styled spreadsheet" case; the **reader** covers "import the
+values from a normal `.xlsx`". Out of scope for both (see [`PLAN.md`](./PLAN.md)
+and [`PLAN-READER.md`](./PLAN-READER.md)): images, charts, pivot tables, rich
+text, a streaming mode, `.xls` / `.xlsb`.
 
 ## Performance
 
-In-memory; ~100k rows × 5 cols serialise in ~1 second. Comfortable for typical
-exports; for millions of rows, wait for a streaming writer or chunk across
-sheets.
+In-memory. Writing ~100k rows × 5 cols takes ~1 s; reading is comparable. For
+millions of rows, chunk across sheets or wait for a streaming mode.
 
 ## License
 

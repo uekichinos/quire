@@ -1,7 +1,7 @@
 {
   "name": "@uekichinos/quire",
-  "version": "0.1.0",
-  "description": "Small, dependency-light .xlsx writer for Node and the browser. Worksheets, typed cells, styles, number formats, merged cells — no OOXML reader, no legacy bloat.",
+  "version": "0.2.0",
+  "description": "Small, dependency-light .xlsx read + write for Node and the browser. Worksheets, typed cells, styles, dates, formulas, merged cells — one dependency, no legacy bloat.",
   "keywords": [
     "uekichinos",
     "quire",
