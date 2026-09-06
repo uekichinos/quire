@@ -29,9 +29,19 @@ export type {
   BorderStyleInput,
 } from './style'
 
+// --- Reading (0.2.0) ---
+export { readWorkbook } from './read'
+export type {
+  ReadWorkbook,
+  ReadWorksheet,
+  ReadCell,
+  ReadCellType,
+  ReadOptions,
+} from './read'
+export { XlsxReadError } from './unzip'
+export { XmlError } from './xml-read'
+
 // Low-level helpers, exported for advanced use and testing.
 export { colLetter, colNumber, parseRef, toRef, toRange, type CellAddress } from './address'
 export { dateToSerial } from './datetime'
 export { escapeXml } from './xml'
-
-export const version = '0.0.0'
