@@ -1,5 +1,7 @@
 # @uekichinos/quire
 
+[![Socket Badge](https://badge.socket.dev/npm/package/@uekichinos/quire/0.1.0)](https://socket.dev/npm/package/@uekichinos/quire/overview/0.1.0)
+
 A small, dependency-light `.xlsx` **writer** for Node and the browser.
 
 - **One runtime dependency** — [`fflate`](https://github.com/101arrowz/fflate) for zip packaging
