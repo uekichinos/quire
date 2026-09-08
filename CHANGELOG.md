@@ -2,7 +2,10 @@
 
 All notable changes to `@uekichinos/quire` are documented here.
 
-## [Unreleased]
+## [0.3.0] - 2026-09-08
+
+Cell styles on read, plus a round of writer/reader hardening. Still **one
+runtime dependency** (`fflate`).
 
 ### Hardening
 - **`xlsx()` is now idempotent** — the shared-string table and style pool are

@@ -1,6 +1,6 @@
 {
   "name": "@uekichinos/quire",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Small, dependency-light .xlsx read + write for Node and the browser. Worksheets, typed cells, styles, dates, formulas, merged cells — one dependency, no legacy bloat.",
   "keywords": [
     "uekichinos",

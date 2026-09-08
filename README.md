@@ -1,6 +1,6 @@
 # @uekichinos/quire
 
-[![Socket Badge](https://badge.socket.dev/npm/package/@uekichinos/quire/0.2.0)](https://socket.dev/npm/package/@uekichinos/quire/overview/0.2.0)
+[![Socket Badge](https://badge.socket.dev/npm/package/@uekichinos/quire/0.3.0)](https://socket.dev/npm/package/@uekichinos/quire/overview/0.3.0)
 
 A small, dependency-light `.xlsx` **reader + writer** for Node and the browser.
 
