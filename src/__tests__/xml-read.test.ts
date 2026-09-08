@@ -124,3 +124,65 @@ describe('parseXml — rejects the dangerous / malformed', () => {
     expect(performance.now() - t0).toBeLessThan(1000)
   })
 })
+
+describe('parseXml — fuzz', () => {
+  const rand = (seed: number) => () => {
+    seed = (seed * 1664525 + 1013904223) >>> 0
+    return seed / 0xffffffff
+  }
+
+  it('random well-formed trees round-trip their open/close structure', () => {
+    const r = rand(12345)
+    for (let iter = 0; iter < 300; iter++) {
+      const names = ['a', 'b', 'row', 'c', 'v', 'x:y']
+      const stack: string[] = []
+      let xml = ''
+      const steps = 3 + Math.floor(r() * 40)
+      for (let i = 0; i < steps; i++) {
+        const roll = r()
+        if (roll < 0.45 && stack.length < 20) {
+          const n = names[Math.floor(r() * names.length)]!
+          if (r() < 0.25) {
+            xml += `<${n}/>`
+          } else {
+            const attr = r() < 0.5 ? ` k="${r() < 0.5 ? 'v&amp;1' : '&lt;x&gt;'}"` : ''
+            xml += `<${n}${attr}>`
+            stack.push(n)
+          }
+        } else if (roll < 0.7 && stack.length) {
+          xml += `</${stack.pop()}>`
+        } else {
+          xml += ['text', 'a &amp; b', ' spaced ', '&#65;&#x42;', ''][Math.floor(r() * 5)]
+        }
+      }
+      while (stack.length) xml += `</${stack.pop()}>`
+
+      const opens: string[] = []
+      const closes: string[] = []
+      expect(() =>
+        parseXml(xml, {
+          onOpen: (n) => opens.push(n), // self-closing fires onOpen + onClose, so balanced
+          onClose: (n) => closes.push(n),
+        }),
+      ).not.toThrow()
+      expect(closes.slice().sort()).toEqual(opens.slice().sort())
+    }
+  })
+
+  it('random byte soup always terminates — parses or throws XmlError, never hangs', () => {
+    const r = rand(777)
+    const chars = '<>/="\'abc &;!?[]-\n\t'
+    for (let iter = 0; iter < 500; iter++) {
+      let s = ''
+      const len = Math.floor(r() * 120)
+      for (let i = 0; i < len; i++) s += chars[Math.floor(r() * chars.length)]
+      const t0 = performance.now()
+      try {
+        parseXml(s, {})
+      } catch (err) {
+        expect(err).toBeInstanceOf(XmlError)
+      }
+      expect(performance.now() - t0).toBeLessThan(50)
+    }
+  })
+})

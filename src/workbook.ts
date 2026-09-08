@@ -1,3 +1,4 @@
+import { QuireError } from './errors'
 import { parseRef, toRef } from './address'
 import { dateToSerial } from './datetime'
 import {
@@ -12,6 +13,7 @@ import {
 } from './serialize'
 import { StylePool } from './style-pool'
 import { isEmptyStyle, mergeStyle, type CellStyle } from './style'
+import { numToXml } from './number'
 import { escapeText } from './xml'
 import { zipParts } from './zip'
 
@@ -69,26 +71,26 @@ const RANGE_RE = /^([A-Z]+[1-9][0-9]*):([A-Z]+[1-9][0-9]*)$/
 
 function validateSheetName(name: string, taken: readonly string[]): void {
   if (typeof name !== 'string' || name.length === 0 || name.length > 31) {
-    throw new Error('@uekichinos/quire: worksheet name must be 1–31 characters')
+    throw new QuireError('worksheet name must be 1–31 characters')
   }
   if (INVALID_NAME_CHARS.test(name)) {
-    throw new Error('@uekichinos/quire: worksheet name cannot contain \\ / ? * [ ] :')
+    throw new QuireError('worksheet name cannot contain \\ / ? * [ ] :')
   }
   if (name.startsWith("'") || name.endsWith("'")) {
-    throw new Error('@uekichinos/quire: worksheet name cannot start or end with an apostrophe')
+    throw new QuireError('worksheet name cannot start or end with an apostrophe')
   }
   if (taken.some((t) => t.toLowerCase() === name.toLowerCase())) {
-    throw new Error(`@uekichinos/quire: duplicate worksheet name "${name}"`)
+    throw new QuireError(`duplicate worksheet name "${name}"`)
   }
 }
 
 function parseRange(range: string): { top: number; left: number; bottom: number; right: number } {
   const m = RANGE_RE.exec(range)
-  if (!m) throw new Error(`@uekichinos/quire: invalid range "${range}" (expected e.g. "A1:C3")`)
+  if (!m) throw new QuireError(`invalid range "${range}" (expected e.g. "A1:C3")`)
   const a = parseRef(m[1]!)
   const b = parseRef(m[2]!)
   if (a.row > b.row || a.col > b.col) {
-    throw new Error(`@uekichinos/quire: range "${range}" must go from top-left to bottom-right`)
+    throw new QuireError(`range "${range}" must go from top-left to bottom-right`)
   }
   return { top: a.row, left: a.col, bottom: b.row, right: b.col }
 }
@@ -158,12 +160,12 @@ class QuireWorksheet implements Worksheet {
   private maxRow = 0
   private maxCol = 0
 
-  constructor(
-    name: string,
-    private readonly sst: SharedStrings,
-    private readonly pool: StylePool,
-    options: WorksheetOptions = {},
-  ) {
+  // The workbook passes a fresh shared-strings table + style pool into
+  // `serialize()` each time, so `xlsx()` is pure and repeatable.
+  private sst!: SharedStrings
+  private pool!: StylePool
+
+  constructor(name: string, options: WorksheetOptions = {}) {
     this.name = name
     options.columns?.forEach((spec, i) => this.setColumn(i + 1, spec))
     if (options.freeze) this.freeze(options.freeze)
@@ -172,7 +174,7 @@ class QuireWorksheet implements Worksheet {
 
   addRow(values: CellInput[], options: AddRowOptions = {}): this {
     if (!Array.isArray(values)) {
-      throw new Error('@uekichinos/quire: addRow expects an array of values')
+      throw new QuireError('addRow expects an array of values')
     }
     const r = this.nextRow++
     if (options.style || options.height != null) {
@@ -194,10 +196,10 @@ class QuireWorksheet implements Worksheet {
 
   setRow(row: number, options: RowOptions): this {
     if (!Number.isInteger(row) || row < 1) {
-      throw new Error('@uekichinos/quire: row index must be a positive integer')
+      throw new QuireError('row index must be a positive integer')
     }
     if (options.height != null && !(options.height > 0)) {
-      throw new Error('@uekichinos/quire: row height must be a positive number')
+      throw new QuireError('row height must be a positive number')
     }
     const meta: RowOptions = { ...this.rowMeta.get(row) }
     if (options.style && !isEmptyStyle(options.style)) meta.style = options.style
@@ -209,10 +211,10 @@ class QuireWorksheet implements Worksheet {
 
   setColumn(index: number, spec: ColumnSpec): this {
     if (!Number.isInteger(index) || index < 1 || index > MAX_COL) {
-      throw new Error(`@uekichinos/quire: column index must be between 1 and ${MAX_COL}`)
+      throw new QuireError(`column index must be between 1 and ${MAX_COL}`)
     }
     if (spec.width != null && !(spec.width >= 0)) {
-      throw new Error('@uekichinos/quire: column width must be a non-negative number')
+      throw new QuireError('column width must be a non-negative number')
     }
     this.columns.set(index, { ...this.columns.get(index), ...spec })
     return this
@@ -221,14 +223,14 @@ class QuireWorksheet implements Worksheet {
   merge(range: string): this {
     const { top, left, bottom, right } = parseRange(range)
     if (top === bottom && left === right) {
-      throw new Error(`@uekichinos/quire: cannot merge a single cell ("${range}")`)
+      throw new QuireError(`cannot merge a single cell ("${range}")`)
     }
     const norm = `${toRef(top, left)}:${toRef(bottom, right)}`
     for (const existing of this.merges) {
       const e = parseRange(existing)
       const overlaps = left <= e.right && right >= e.left && top <= e.bottom && bottom >= e.top
       if (overlaps) {
-        throw new Error(`@uekichinos/quire: merge "${norm}" overlaps existing merge "${existing}"`)
+        throw new QuireError(`merge "${norm}" overlaps existing merge "${existing}"`)
       }
     }
     this.merges.push(norm)
@@ -241,7 +243,7 @@ class QuireWorksheet implements Worksheet {
     const x = options.xSplit ?? 0
     const y = options.ySplit ?? 0
     if (!Number.isInteger(x) || !Number.isInteger(y) || x < 0 || y < 0) {
-      throw new Error('@uekichinos/quire: freeze splits must be non-negative integers')
+      throw new QuireError('freeze splits must be non-negative integers')
     }
     this.frozen = x === 0 && y === 0 ? null : { xSplit: x, ySplit: y }
     return this
@@ -272,7 +274,9 @@ class QuireWorksheet implements Worksheet {
   }
 
   /** @internal */
-  serialize(): string {
+  serialize(sst: SharedStrings, pool: StylePool): string {
+    this.sst = sst
+    this.pool = pool
     const rowNumbers = [...new Set([...this.rows.keys(), ...this.rowMeta.keys()])].sort(
       (a, b) => a - b,
     )
@@ -348,12 +352,15 @@ class QuireWorksheet implements Worksheet {
       if (typeof res === 'boolean') {
         return `<c r="${ref}"${sAttr} t="b">${f}<v>${res ? 1 : 0}</v></c>`
       }
-      return `<c r="${ref}"${sAttr}>${f}<v>${res}</v></c>`
+      if (!Number.isFinite(res)) {
+        throw new QuireError(`formula result for ${ref} is not a finite number`)
+      }
+      return `<c r="${ref}"${sAttr}>${f}<v>${numToXml(res)}</v></c>`
     }
 
     if (value instanceof Date) {
       const s = this.pool.intern(style, { isDate: true })
-      return `<c r="${ref}" s="${s}"><v>${dateToSerial(value)}</v></c>`
+      return `<c r="${ref}" s="${s}"><v>${numToXml(dateToSerial(value))}</v></c>`
     }
 
     const s = this.pool.intern(style)
@@ -361,9 +368,9 @@ class QuireWorksheet implements Worksheet {
 
     if (typeof value === 'number') {
       if (!Number.isFinite(value)) {
-        throw new Error(`@uekichinos/quire: cell ${ref} is not a finite number`)
+        throw new QuireError(`cell ${ref} is not a finite number`)
       }
-      return `<c r="${ref}"${sAttr}><v>${value}</v></c>`
+      return `<c r="${ref}"${sAttr}><v>${numToXml(value)}</v></c>`
     }
     if (typeof value === 'boolean') {
       return `<c r="${ref}"${sAttr} t="b"><v>${value ? 1 : 0}</v></c>`
@@ -405,27 +412,29 @@ export interface Workbook {
 
 class QuireWorkbook implements Workbook {
   private sheets: QuireWorksheet[] = []
-  private sst = new SharedStrings()
-  private pool = new StylePool()
 
   addWorksheet(name: string, options: WorksheetOptions = {}): Worksheet {
     validateSheetName(
       name,
       this.sheets.map((s) => s.name),
     )
-    const sheet = new QuireWorksheet(name, this.sst, this.pool, options)
+    const sheet = new QuireWorksheet(name, options)
     this.sheets.push(sheet)
     return sheet
   }
 
   xlsx(): Uint8Array {
     if (this.sheets.length === 0) {
-      throw new Error('@uekichinos/quire: a workbook needs at least one worksheet')
+      throw new QuireError('a workbook needs at least one worksheet')
     }
 
+    // Fresh per call — `xlsx()` / `blob()` are pure and repeatable.
+    const sst = new SharedStrings()
+    const pool = new StylePool()
+
     // Serialise sheets first — this populates the shared-string table and style pool.
-    const sheetXmls = this.sheets.map((s) => s.serialize())
-    const hasStrings = this.sst.list.length > 0
+    const sheetXmls = this.sheets.map((s) => s.serialize(sst, pool))
+    const hasStrings = sst.list.length > 0
     const created = new Date().toISOString().replace(/\.\d{3}Z$/, 'Z')
 
     const parts: Record<string, string> = {
@@ -438,13 +447,13 @@ class QuireWorkbook implements Workbook {
         this.sheets.map((s) => s.getFilterRange()),
       ),
       'xl/_rels/workbook.xml.rels': workbookRelsXml(this.sheets.length, hasStrings),
-      'xl/styles.xml': this.pool.toXml(),
+      'xl/styles.xml': pool.toXml(),
     }
     sheetXmls.forEach((xml, i) => {
       parts[`xl/worksheets/sheet${i + 1}.xml`] = xml
     })
     if (hasStrings) {
-      parts['xl/sharedStrings.xml'] = sharedStringsXml(this.sst.list, this.sst.total)
+      parts['xl/sharedStrings.xml'] = sharedStringsXml(sst.list, sst.total)
     }
 
     return zipParts(parts)

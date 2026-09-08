@@ -6,6 +6,7 @@
  *
  * Adapted from ExcelJS date handling (MIT).
  */
+import { QuireError } from './errors'
 
 const EPOCH_1900_UTC = Date.UTC(1899, 11, 31)
 const EPOCH_1904_UTC = Date.UTC(1904, 0, 1)
@@ -15,15 +16,15 @@ const DAY_MS = 86_400_000
 export function dateToSerial(date: Date): number {
   const time = date.getTime()
   if (Number.isNaN(time)) {
-    throw new Error('@uekichinos/quire: cannot write an invalid Date')
+    throw new QuireError('cannot write an invalid Date')
   }
 
   const dayStartUtc = Date.UTC(date.getFullYear(), date.getMonth(), date.getDate())
   let days = Math.round((dayStartUtc - EPOCH_1900_UTC) / DAY_MS)
 
   if (days < 1) {
-    throw new Error(
-      '@uekichinos/quire: dates before 1900-01-01 are not representable in the 1900 date system',
+    throw new QuireError(
+      'dates before 1900-01-01 are not representable in the 1900 date system',
     )
   }
 
@@ -46,7 +47,7 @@ export function dateToSerial(date: Date): number {
  */
 export function serialToDate(serial: number, date1904 = false): Date {
   if (!Number.isFinite(serial)) {
-    throw new Error('@uekichinos/quire: invalid date serial')
+    throw new QuireError('invalid date serial')
   }
 
   let whole = Math.floor(serial)

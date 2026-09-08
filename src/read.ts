@@ -1,6 +1,7 @@
 import { colLetter, parseRef } from './address'
 import { serialToDate } from './datetime'
-import { isDateNumFmt } from './numfmt'
+import { QuireError } from './errors'
+import { builtinNumFmtCode, isDateNumFmt } from './numfmt'
 import { parseStyleSheet, type ReadStyle, type StyleSheet } from './style-read'
 import { DEFAULT_LIMITS, extractParts, XlsxReadError, type UnzipLimits } from './unzip'
 import { parseXml } from './xml-read'
@@ -26,8 +27,18 @@ export interface ReadCell {
   value: string | number | boolean | Date | null
   /** Present when the cell contains a formula (without the leading `=`). */
   formula?: string
+  /** The cell's number-format code, when it has a non-`General` format. */
+  numFmt?: string
   /** Resolved cell style — only when `readWorkbook(bytes, { styles: true })`. */
   style?: ReadStyle
+}
+
+/** Caps that guard against resource exhaustion when parsing untrusted files. */
+export interface ReadLimits extends UnzipLimits {
+  /** Max total number of cells across all loaded sheets. Default 5,000,000. */
+  maxCells: number
+  /** Max number of worksheets. Default 256. */
+  maxSheets: number
 }
 
 export interface ReadOptions {
@@ -37,7 +48,18 @@ export interface ReadOptions {
   dates?: boolean
   /** Resolve per-cell styles (font / fill / border / alignment / numFmt). Default: `false`. */
   styles?: boolean
-  limits?: Partial<UnzipLimits>
+  limits?: Partial<ReadLimits>
+}
+
+const DEFAULT_READ_LIMITS: ReadLimits = {
+  ...DEFAULT_LIMITS,
+  maxCells: 5_000_000,
+  maxSheets: 256,
+}
+
+export interface ValuesOptions {
+  /** Trim each row to its own last populated cell instead of padding to `maxCol`. */
+  ragged?: boolean
 }
 
 export interface ReadWorksheet {
@@ -52,8 +74,8 @@ export interface ReadWorksheet {
   rows(): IterableIterator<ReadCell[]>
   /** Rectangular `ReadCell[][]` (row 1..maxRow × col 1..maxCol), holes `undefined`. */
   toArray(): ReadCell[][]
-  /** Rectangular values only — `null` for empty cells. */
-  values(): (string | number | boolean | Date | null)[][]
+  /** Row/column grid of values — `null` for empty cells. Rectangular unless `{ ragged: true }`. */
+  values(options?: ValuesOptions): (string | number | boolean | Date | null)[][]
 }
 
 export interface ReadWorkbook {
@@ -141,17 +163,30 @@ interface SheetParseCtx {
   date1904: boolean
   dates: boolean
   withStyles: boolean
+  maxCells: number
+  /** Shared running cell count across all sheets. */
+  counter: { n: number }
+}
+
+function numFmtIdOf(styleIdx: number, styles: StyleSheet | null): number | undefined {
+  if (!styles || styleIdx < 0) return undefined
+  return styles.xfNumFmtId[styleIdx]
+}
+
+function numFmtCodeOf(styleIdx: number, styles: StyleSheet | null): string | undefined {
+  const id = numFmtIdOf(styleIdx, styles)
+  if (id === undefined || id === 0) return undefined
+  return styles!.customCode.get(id) ?? builtinNumFmtCode(id)
 }
 
 function isDateStyle(styleIdx: number, styles: StyleSheet | null): boolean {
-  if (!styles) return false
-  const numFmtId = styles.xfNumFmtId[styleIdx]
-  if (numFmtId === undefined) return false
-  return isDateNumFmt(numFmtId, styles.customCode.get(numFmtId))
+  const id = numFmtIdOf(styleIdx, styles)
+  if (id === undefined) return false
+  return isDateNumFmt(id, styles!.customCode.get(id))
 }
 
 function parseSheet(xml: string, ctx: SheetParseCtx): RawSheet {
-  const { sst, styles, date1904, dates, withStyles } = ctx
+  const { sst, styles, date1904, dates, withStyles, counter, maxCells } = ctx
   const cells = new Map<number, Map<number, ReadCell>>()
   const merges: string[] = []
   let maxRow = 0
@@ -224,9 +259,15 @@ function parseSheet(xml: string, ctx: SheetParseCtx): RawSheet {
 
     const cell: ReadCell = { ref, row: curRow, col: curCol, type, value }
     if (hasFormula && fBuf) cell.formula = fBuf.replace(/^=/, '')
+    const numFmt = numFmtCodeOf(cStyle, styles)
+    if (numFmt) cell.numFmt = numFmt
     if (withStyles && styles && cStyle >= 0) {
       const st = styles.xfStyle[cStyle]
       if (st && Object.keys(st).length) cell.style = st
+    }
+
+    if (++counter.n > maxCells) {
+      throw new QuireError(`workbook has more than ${maxCells} cells (the read limit)`)
     }
 
     let line = cells.get(curRow)
@@ -363,18 +404,105 @@ class Worksheet implements ReadWorksheet {
     return out
   }
 
-  values(): (string | number | boolean | Date | null)[][] {
+  values(options: ValuesOptions = {}): (string | number | boolean | Date | null)[][] {
     return this.toArray().map((row) => {
-      const out: (string | number | boolean | Date | null)[] = new Array(this.maxCol).fill(null)
-      for (let c = 0; c < this.maxCol; c++) if (row[c]) out[c] = row[c]!.value
+      const width = options.ragged ? lastIndex(row) + 1 : this.maxCol
+      const out: (string | number | boolean | Date | null)[] = new Array(width).fill(null)
+      for (let c = 0; c < width; c++) if (row[c]) out[c] = row[c]!.value
       return out
     })
   }
 }
 
+function lastIndex(row: readonly unknown[]): number {
+  for (let i = row.length - 1; i >= 0; i--) if (row[i] !== undefined) return i
+  return -1
+}
+
 /* -------------------------------------------------------------------------- */
 /*  Entry point                                                                */
 /* -------------------------------------------------------------------------- */
+
+interface Prepared {
+  sheetRefs: SheetRef[]
+  date1904: boolean
+  /** Build one worksheet, or `null` if the `sheets` filter excludes it. */
+  buildSheet(sr: SheetRef, index: number): Worksheet | null
+}
+
+function prepare(input: Uint8Array | ArrayBuffer, options: ReadOptions): Prepared {
+  const bytes = input instanceof Uint8Array ? input : new Uint8Array(input)
+  const limits: ReadLimits = { ...DEFAULT_READ_LIMITS, ...options.limits }
+  const parts = extractParts(bytes, limits)
+
+  const { sheets: sheetRefs, date1904 } = parseWorkbook(parts.get('xl/workbook.xml')!)
+  if (sheetRefs.length > limits.maxSheets) {
+    throw new XlsxReadError(`workbook has ${sheetRefs.length} sheets (limit ${limits.maxSheets})`)
+  }
+
+  const rels = parts.has('xl/_rels/workbook.xml.rels')
+    ? parseWorkbookRels(parts.get('xl/_rels/workbook.xml.rels')!)
+    : new Map<string, string>()
+  const sst = parts.has('xl/sharedstrings.xml')
+    ? parseSharedStrings(parts.get('xl/sharedstrings.xml')!)
+    : []
+
+  const withStyles = options.styles === true
+  let themeXml: string | undefined
+  if (withStyles) {
+    for (const [name, xml] of parts) {
+      if (name.startsWith('xl/theme/')) {
+        themeXml = xml
+        break
+      }
+    }
+  }
+  const styles = parts.has('xl/styles.xml')
+    ? parseStyleSheet(parts.get('xl/styles.xml')!, { withStyles, themeXml })
+    : null
+
+  const ctx: SheetParseCtx = {
+    sst,
+    styles,
+    date1904,
+    dates: options.dates !== false,
+    withStyles,
+    maxCells: limits.maxCells,
+    counter: { n: 0 },
+  }
+
+  const wanted = options.sheets
+  const shouldLoad = (name: string, index: number): boolean =>
+    !wanted || wanted.some((w) => (typeof w === 'number' ? w === index : w === name))
+
+  return {
+    sheetRefs,
+    date1904,
+    buildSheet(sr, index) {
+      if (!shouldLoad(sr.name, index)) return null
+      const target = rels.get(sr.rid) ?? `xl/worksheets/sheet${index + 1}.xml`
+      const xml = parts.get(target.toLowerCase())
+      if (!xml) {
+        throw new XlsxReadError(`worksheet part "${target}" for sheet "${sr.name}" is missing`)
+      }
+      const raw = parseSheet(xml, ctx)
+      return new Worksheet(sr.name, raw.cells, raw.maxRow, raw.maxCol, raw.merges, raw.dimRef)
+    },
+  }
+}
+
+function assemble(built: Worksheet[], date1904: boolean): ReadWorkbook {
+  return {
+    sheetNames: built.map((s) => s.name),
+    sheets: built,
+    date1904,
+    sheet(nameOrIndex) {
+      return typeof nameOrIndex === 'number'
+        ? built[nameOrIndex]
+        : built.find((s) => s.name === nameOrIndex)
+    },
+  }
+}
 
 /**
  * Parses an `.xlsx` byte array into a read model.
@@ -389,60 +517,30 @@ export function readWorkbook(
   input: Uint8Array | ArrayBuffer,
   options: ReadOptions = {},
 ): ReadWorkbook {
-  const bytes = input instanceof Uint8Array ? input : new Uint8Array(input)
-  const limits = { ...DEFAULT_LIMITS, ...options.limits }
-  const parts = extractParts(bytes, limits)
-
-  const { sheets: sheetRefs, date1904 } = parseWorkbook(parts.get('xl/workbook.xml')!)
-  const rels = parts.has('xl/_rels/workbook.xml.rels')
-    ? parseWorkbookRels(parts.get('xl/_rels/workbook.xml.rels')!)
-    : new Map<string, string>()
-  const sst = parts.has('xl/sharedstrings.xml')
-    ? parseSharedStrings(parts.get('xl/sharedstrings.xml')!)
-    : []
-  const withStyles = options.styles === true
-  let themeXml: string | undefined
-  if (withStyles) {
-    for (const [name, xml] of parts) {
-      if (name.startsWith('xl/theme/')) {
-        themeXml = xml
-        break
-      }
-    }
-  }
-  const styles = parts.has('xl/styles.xml')
-    ? parseStyleSheet(parts.get('xl/styles.xml')!, { withStyles, themeXml })
-    : null
-  const ctx: SheetParseCtx = {
-    sst,
-    styles,
-    date1904,
-    dates: options.dates !== false,
-    withStyles,
-  }
-
-  const wanted = options.sheets
-  const shouldLoad = (name: string, index: number): boolean =>
-    !wanted || wanted.some((w) => (typeof w === 'number' ? w === index : w === name))
-
+  const { sheetRefs, date1904, buildSheet } = prepare(input, options)
   const built: Worksheet[] = []
-  sheetRefs.forEach((sr, index) => {
-    if (!shouldLoad(sr.name, index)) return
-    const target = rels.get(sr.rid) ?? `xl/worksheets/sheet${index + 1}.xml`
-    const xml = parts.get(target.toLowerCase())
-    if (!xml) throw new XlsxReadError(`worksheet part "${target}" for sheet "${sr.name}" is missing`)
-    const raw = parseSheet(xml, ctx)
-    built.push(new Worksheet(sr.name, raw.cells, raw.maxRow, raw.maxCol, raw.merges, raw.dimRef))
+  sheetRefs.forEach((sr, i) => {
+    const w = buildSheet(sr, i)
+    if (w) built.push(w)
   })
+  return assemble(built, date1904)
+}
 
-  return {
-    sheetNames: built.map((s) => s.name),
-    sheets: built,
-    date1904,
-    sheet(nameOrIndex) {
-      return typeof nameOrIndex === 'number'
-        ? built[nameOrIndex]
-        : built.find((s) => s.name === nameOrIndex)
-    },
+/**
+ * Like {@link readWorkbook} but yields to the event loop between worksheets, so
+ * a large multi-sheet import doesn't monopolise the thread in one tick. A single
+ * huge sheet still parses in one synchronous step — run those in a worker.
+ */
+export async function readWorkbookAsync(
+  input: Uint8Array | ArrayBuffer,
+  options: ReadOptions = {},
+): Promise<ReadWorkbook> {
+  const { sheetRefs, date1904, buildSheet } = prepare(input, options)
+  const built: Worksheet[] = []
+  for (let i = 0; i < sheetRefs.length; i++) {
+    const w = buildSheet(sheetRefs[i]!, i)
+    if (w) built.push(w)
+    await Promise.resolve()
   }
+  return assemble(built, date1904)
 }

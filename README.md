@@ -121,9 +121,20 @@ for (const row of s.rows()) {            // sparse: row[col-1]
 
 `ReadCell.type` is `'string' | 'number' | 'boolean' | 'date' | 'formula' |
 'error' | 'empty'`. Numbers with a date format become `Date` (opt out with
-`readWorkbook(bytes, { dates: false })`). Formula cells carry both `.formula`
-(no leading `=`) and `.value` (the cached result). `{ sheets: [name|index] }`
-loads a subset.
+`readWorkbook(bytes, { dates: false })`). Every cell also carries `.numFmt` (the
+resolved format code) when it has one. Formula cells carry both `.formula` (no
+leading `=`) and `.value` (the cached result). `{ sheets: [name|index] }` loads
+a subset.
+
+`readWorkbookAsync(bytes, options?)` returns the same `ReadWorkbook` but yields
+to the event loop between sheets, so a large import doesn't block. `s.values({
+ragged: true })` keeps each row's own length instead of padding to the sheet
+width.
+
+**Limits.** `readWorkbook(bytes, { limits })` caps `maxTotalBytes` (100 MB),
+`maxPartBytes` (50 MB), `maxCells` (5 000 000) and `maxSheets` (256); the
+archive is inflated part-by-part and aborted mid-stream when a cap trips. Over
+the limit throws `QuireError`.
 
 **Styles on read** — `readWorkbook(bytes, { styles: true })` resolves a
 `ReadStyle` onto each cell (`font`, `fill`, `border`, `align`, `numFmt`), mirror

@@ -1,6 +1,7 @@
 import { strFromU8, unzipSync } from 'fflate'
 import { describe, expect, it } from 'vitest'
 import { createWorkbook } from '../workbook'
+import { readWorkbook } from '../read'
 
 /** Build a workbook, zip it, and return the parts as decoded strings. */
 function build(fn: (wb: ReturnType<typeof createWorkbook>) => void): Record<string, string> {
@@ -193,6 +194,32 @@ describe('createWorkbook — output', () => {
       return wb.xlsx()
     }
     expect(Array.from(make())).toEqual(Array.from(make()))
+  })
+
+  it('xlsx() is idempotent — repeated calls on one workbook match', () => {
+    const wb = createWorkbook()
+    const s = wb.addWorksheet('S')
+    s.addRow(['dup', 'dup', 'x']).addRow([{ value: 1, style: { font: { bold: true } } }])
+
+    const first = wb.xlsx()
+    wb.blob() // also serialises internally
+    const third = wb.xlsx()
+
+    expect(Array.from(third)).toEqual(Array.from(first))
+    const sst = strFromU8(unzipSync(third)['xl/sharedStrings.xml']!)
+    expect(sst).toContain('count="3" uniqueCount="2"')
+  })
+
+  it('writes large / tiny magnitudes as plain decimals, round-trips them', () => {
+    const wb = createWorkbook()
+    wb.addWorksheet('S').addRow([1e21, 1e-7, 1.23e21])
+    const sheet = strFromU8(unzipSync(wb.xlsx())['xl/worksheets/sheet1.xml']!)
+    expect(sheet).toContain('<v>1000000000000000000000</v>')
+    expect(sheet).toContain('<v>0.0000001</v>')
+    expect(sheet).not.toMatch(/<v>[^<]*e[+-]/i)
+
+    const back = readWorkbook(wb.xlsx()).sheet('S')!.values()[0]
+    expect(back).toEqual([1e21, 1e-7, 1.23e21])
   })
 
   it('blob() carries the spreadsheet mime type', () => {

@@ -1,3 +1,4 @@
+import { QuireError } from './errors'
 import { escapeXml } from './xml'
 import { builtinNumFmtId, DEFAULT_DATE_FORMAT, FIRST_CUSTOM_NUMFMT_ID } from './numfmt'
 import {
@@ -80,7 +81,7 @@ export class StylePool {
     if (code === undefined) return isDate ? this.resolveNumFmt(DEFAULT_DATE_FORMAT) : 0
     if (typeof code === 'number') {
       if (!Number.isInteger(code) || code < 0) {
-        throw new Error(`@uekichinos/quire: numFmt id must be a non-negative integer`)
+        throw new QuireError(`numFmt id must be a non-negative integer`)
       }
       return code
     }

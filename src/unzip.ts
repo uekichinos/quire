@@ -1,8 +1,9 @@
-import { strFromU8, unzipSync, type UnzipFileInfo } from 'fflate'
+import { strFromU8, Unzip, UnzipInflate } from 'fflate'
+import { QuireError } from './errors'
 
-export class XlsxReadError extends Error {
+export class XlsxReadError extends QuireError {
   constructor(message: string) {
-    super(`@uekichinos/quire: ${message}`)
+    super(message)
     this.name = 'XlsxReadError'
   }
 }
@@ -27,48 +28,72 @@ function normalise(name: string): string {
   return name.replace(/\\/g, '/').replace(/^\.\//, '')
 }
 
+function concat(chunks: Uint8Array[], length: number): Uint8Array {
+  const out = new Uint8Array(length)
+  let offset = 0
+  for (const c of chunks) {
+    out.set(c, offset)
+    offset += c.length
+  }
+  return out
+}
+
 /**
- * Extracts the allow-listed OOXML parts from an `.xlsx` (a ZIP), enforcing
- * size caps read from the central directory **before** decompression, then
- * re-checked after. Returns a map keyed by lower-cased part path.
+ * Extracts the allow-listed OOXML parts from an `.xlsx` (a ZIP).
+ *
+ * Uses fflate's **streaming** unzip so decompression can be aborted the moment a
+ * part (or the workbook total) exceeds its cap — a ZIP directory that lies about
+ * a part's size cannot force a large allocation. Non-allow-listed entries and
+ * anything with `..` / an absolute path are never decompressed at all.
  */
 export function extractParts(
   bytes: Uint8Array,
   limits: UnzipLimits = DEFAULT_LIMITS,
 ): Map<string, string> {
-  let declaredTotal = 0
+  const parts = new Map<string, string>()
+  let total = 0
+  let failure: XlsxReadError | null = null
 
-  let raw: Record<string, Uint8Array>
+  const unzip = new Unzip()
+  unzip.register(UnzipInflate)
+
+  unzip.onfile = (file) => {
+    if (failure) return
+    const name = normalise(file.name)
+    if (name.includes('..') || name.startsWith('/') || !ALLOWED_PART.test(name)) return
+
+    const chunks: Uint8Array[] = []
+    let size = 0
+    file.ondata = (err, chunk, final) => {
+      if (failure) return
+      if (err) {
+        failure = new XlsxReadError(`corrupt part "${name}" (${err.message})`)
+        return
+      }
+      size += chunk.length
+      total += chunk.length
+      if (size > limits.maxPartBytes) {
+        failure = new XlsxReadError(`part "${name}" exceeds the ${limits.maxPartBytes}-byte limit`)
+        return
+      }
+      if (total > limits.maxTotalBytes) {
+        failure = new XlsxReadError(`workbook exceeds the ${limits.maxTotalBytes}-byte limit`)
+        return
+      }
+      chunks.push(chunk)
+      if (final) parts.set(name.toLowerCase(), strFromU8(concat(chunks, size)))
+    }
+    file.start()
+  }
+
   try {
-    raw = unzipSync(bytes, {
-      filter: (file: UnzipFileInfo): boolean => {
-        const name = normalise(file.name)
-        if (name.includes('..') || name.startsWith('/')) return false
-        if (!ALLOWED_PART.test(name)) return false
-        if (file.originalSize > limits.maxPartBytes) {
-          throw new XlsxReadError(`part "${name}" exceeds the ${limits.maxPartBytes}-byte limit`)
-        }
-        declaredTotal += file.originalSize
-        if (declaredTotal > limits.maxTotalBytes) {
-          throw new XlsxReadError(`workbook exceeds the ${limits.maxTotalBytes}-byte limit`)
-        }
-        return true
-      },
-    })
+    unzip.push(bytes, true)
   } catch (err) {
+    if (failure) throw failure
     if (err instanceof XlsxReadError) throw err
     throw new XlsxReadError(`not a readable .xlsx file (${(err as Error).message})`)
   }
-
-  const parts = new Map<string, string>()
-  let actualTotal = 0
-  for (const [name, data] of Object.entries(raw)) {
-    actualTotal += data.length
-    if (actualTotal > limits.maxTotalBytes) {
-      throw new XlsxReadError('workbook exceeds its size limit after decompression')
-    }
-    parts.set(normalise(name).toLowerCase(), strFromU8(data))
-  }
+  if (failure) throw failure
 
   if (!parts.has('xl/workbook.xml')) {
     throw new XlsxReadError('not a valid .xlsx — xl/workbook.xml is missing')

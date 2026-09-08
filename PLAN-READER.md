@@ -236,6 +236,21 @@ per cell. Colours: `rgb` exact, `indexed` via the standard palette, `theme` from
 (0) not surfaced. Round-trips vs the writer. 11 tests, 183 total.
 **Deferred to a later minor:** column- and row-level styles on read.
 
+### R5 — hardening ✅ done (unreleased, ships with `0.3.0`)
+Fixes found in a self-review of the reader/writer:
+- **writer** — `xlsx()` made idempotent (`sst`/`pool` built per serialise, not
+  accumulated on the worksheet); `numToXml()` expands JS exponent notation so
+  large / tiny numbers write as plain decimals
+- **unzip** — streaming inflate (`Unzip` + `UnzipInflate`) with a running byte
+  budget, aborts mid-archive on a cap instead of decompressing everything first
+- **read limits** — `{ limits: { maxCells, maxSheets } }` on top of the byte
+  caps; `readWorkbookAsync()` yields between sheets; `values({ ragged: true })`
+- **errors** — single `QuireError` base for every throw (`XlsxReadError`,
+  `XmlError` extend it), all exported
+- **`ReadCell.numFmt`** surfaced unconditionally (not only under `{ styles }`)
+- **tests** — `numToXml` unit, idempotency, real-world-quirk fixture corpus,
+  seeded tokenizer fuzz suite, happy-dom browser round-trip. 202 total.
+
 ---
 
 ## 9. Questions for you

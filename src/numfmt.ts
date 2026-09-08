@@ -52,6 +52,11 @@ export function builtinNumFmtId(code: string): number | undefined {
   return BUILTIN_BY_CODE.get(code)
 }
 
+/** Returns the built-in format code for an id, or `undefined` if not a built-in. */
+export function builtinNumFmtCode(id: number): string | undefined {
+  return BUILTIN[id]
+}
+
 /** Built-in number-format ids that render a date and/or time. */
 const BUILTIN_DATE_IDS = new Set([14, 15, 16, 17, 18, 19, 20, 21, 22, 45, 46, 47])
 

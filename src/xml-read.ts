@@ -15,9 +15,11 @@
  * `__proto__` / `constructor` / `prototype` can never become object keys.
  */
 
-export class XmlError extends Error {
+import { QuireError } from './errors'
+
+export class XmlError extends QuireError {
   constructor(message: string) {
-    super(`@uekichinos/quire: malformed XML — ${message}`)
+    super(`malformed XML — ${message}`)
     this.name = 'XmlError'
   }
 }

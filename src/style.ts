@@ -1,4 +1,5 @@
 /** Public cell-style shape and the helpers for normalising / merging it. */
+import { QuireError } from './errors'
 
 export type BorderStyle =
   | 'thin'
@@ -56,7 +57,7 @@ export function toArgb(color: string): string {
   let c = color.trim().replace(/^#/, '').toUpperCase()
   if (/^[0-9A-F]{6}$/.test(c)) c = `FF${c}`
   if (!/^[0-9A-F]{8}$/.test(c)) {
-    throw new Error(`@uekichinos/quire: invalid colour "${color}" (expected RRGGBB or AARRGGBB)`)
+    throw new QuireError(`invalid colour "${color}" (expected RRGGBB or AARRGGBB)`)
   }
   return c
 }
@@ -73,7 +74,7 @@ const VALID_BORDER_STYLES = new Set<BorderStyle>([
 
 export function assertBorderStyle(style: string): asserts style is BorderStyle {
   if (!VALID_BORDER_STYLES.has(style as BorderStyle)) {
-    throw new Error(`@uekichinos/quire: unknown border style "${style}"`)
+    throw new QuireError(`unknown border style "${style}"`)
   }
 }
 

@@ -4,6 +4,31 @@ All notable changes to `@uekichinos/quire` are documented here.
 
 ## [Unreleased]
 
+### Hardening
+- **`xlsx()` is now idempotent** — the shared-string table and style pool are
+  built fresh per serialise call instead of being accumulated on the worksheet,
+  so `wb.xlsx()` (or `blob()`) called twice returns byte-identical output
+- **Large / tiny numbers** are written as plain decimals — `numToXml()` expands
+  JavaScript's exponent notation (`1e21`, `1e-7`) so Excel never sees `1e+21`
+- **Streaming unzip** — `src/unzip.ts` inflates part-by-part with a running byte
+  budget and aborts mid-stream when a cap is hit, instead of decompressing the
+  whole archive first (zip-bomb resistance)
+- **Read caps** — `readWorkbook(bytes, { limits })` accepts `maxCells`
+  (default 5 000 000) and `maxSheets` (default 256) on top of the existing
+  byte caps; over-limit input throws `QuireError`
+- `readWorkbookAsync(bytes, options?)` — same result, yields to the event loop
+  between sheets so a large import doesn't block the main thread
+- `ReadCell.numFmt` — the resolved number-format code is now on every cell,
+  not only under `{ styles: true }`
+- `ReadWorksheet.values({ ragged: true })` — rows keep their own length instead
+  of being padded to the sheet width
+- All thrown errors now derive from a single `QuireError` base (`XlsxReadError`,
+  `XmlError` included); exported for `instanceof` checks
+- New tests: `numToXml` unit coverage, `xlsx()` idempotency, a real-world-quirk
+  fixture corpus (Excel `mc:AlternateContent`, openpyxl BOM, absolute rel
+  targets), a seeded XML-tokenizer fuzz suite, and a happy-dom browser
+  round-trip (202 total)
+
 ### Styles on read
 - `readWorkbook(bytes, { styles: true })` resolves a `ReadStyle` onto each
   `ReadCell` — `font` (name / size / bold / italic / underline / colour),

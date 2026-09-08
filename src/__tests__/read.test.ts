@@ -1,7 +1,7 @@
 import { zipSync, strToU8 } from 'fflate'
 import { describe, expect, it } from 'vitest'
 import { createWorkbook } from '../workbook'
-import { readWorkbook } from '../read'
+import { readWorkbook, readWorkbookAsync } from '../read'
 import { XlsxReadError } from '../unzip'
 
 /** Build an .xlsx with the writer, read it back. */
@@ -127,6 +127,54 @@ describe('readWorkbook — round-trips the writer', () => {
     wb.addWorksheet('S').addRow(['x'])
     const buf = wb.xlsx().buffer
     expect(readWorkbook(buf as ArrayBuffer).sheet('S')!.cell('A1')!.value).toBe('x')
+  })
+
+  it('surfaces numFmt on every cell (not just under { styles: true })', () => {
+    const wb = roundTrip((w) => {
+      const s = w.addWorksheet('S')
+      s.addRow([{ value: 1.5, style: { numFmt: '#,##0.00' } }, 42])
+      s.addRow([{ value: 0.25, style: { numFmt: '0.00%' } }]) // built-in id 10
+    })
+    const s = wb.sheet('S')!
+    expect(s.cell('A1')!.numFmt).toBe('#,##0.00')
+    expect(s.cell('A2')!.numFmt).toBe('0.00%')
+    expect(s.cell('B1')!.numFmt).toBeUndefined() // General
+  })
+
+  it('values({ ragged: true }) trims each row to its own width', () => {
+    const wb = roundTrip((w) => {
+      const s = w.addWorksheet('S')
+      s.addRow(['a', 'b', 'c'])
+      s.addRow(['d'])
+    })
+    const s = wb.sheet('S')!
+    expect(s.values()).toEqual([
+      ['a', 'b', 'c'],
+      ['d', null, null],
+    ])
+    expect(s.values({ ragged: true })).toEqual([['a', 'b', 'c'], ['d']])
+  })
+
+  it('readWorkbookAsync returns the same model', async () => {
+    const wb = createWorkbook()
+    wb.addWorksheet('A').addRow([1, 2])
+    wb.addWorksheet('B').addRow(['x'])
+    const back = await readWorkbookAsync(wb.xlsx())
+    expect(back.sheetNames).toEqual(['A', 'B'])
+    expect(back.sheet('A')!.values()).toEqual([[1, 2]])
+  })
+
+  it('enforces maxCells', () => {
+    const wb = createWorkbook()
+    const s = wb.addWorksheet('S')
+    for (let i = 0; i < 50; i++) s.addRow([i, i, i, i])
+    expect(() => readWorkbook(wb.xlsx(), { limits: { maxCells: 100 } })).toThrow(/cells/)
+  })
+
+  it('enforces maxSheets', () => {
+    const wb = createWorkbook()
+    for (let i = 0; i < 5; i++) wb.addWorksheet(`S${i}`).addRow([i])
+    expect(() => readWorkbook(wb.xlsx(), { limits: { maxSheets: 3 } })).toThrow(/sheets/)
   })
 })
 

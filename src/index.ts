@@ -30,17 +30,20 @@ export type {
 } from './style'
 
 // --- Reading (0.2.0) ---
-export { readWorkbook } from './read'
+export { readWorkbook, readWorkbookAsync } from './read'
 export type {
   ReadWorkbook,
   ReadWorksheet,
   ReadCell,
   ReadCellType,
   ReadOptions,
+  ReadLimits,
+  ValuesOptions,
   ReadStyle,
   ReadFont,
   ReadBorderEdge,
 } from './read'
+export { QuireError } from './errors'
 export { XlsxReadError } from './unzip'
 export { XmlError } from './xml-read'
 

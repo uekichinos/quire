@@ -4,13 +4,14 @@
  *
  * Adapted from ExcelJS `lib/utils/col-cache.js` (MIT).
  */
+import { QuireError } from './errors'
 
 const A = 'A'.charCodeAt(0)
 
 /** `1 → "A"`, `26 → "Z"`, `27 → "AA"`, `702 → "ZZ"`, `703 → "AAA"`. */
 export function colLetter(col: number): string {
   if (!Number.isInteger(col) || col < 1) {
-    throw new Error(`@uekichinos/quire: column number must be a positive integer, got ${col}`)
+    throw new QuireError(`column number must be a positive integer, got ${col}`)
   }
   let n = col
   let out = ''
@@ -25,7 +26,7 @@ export function colLetter(col: number): string {
 /** `"A" → 1`, `"Z" → 26`, `"AA" → 27`. */
 export function colNumber(letters: string): number {
   if (!/^[A-Z]+$/.test(letters)) {
-    throw new Error(`@uekichinos/quire: invalid column "${letters}"`)
+    throw new QuireError(`invalid column "${letters}"`)
   }
   let n = 0
   for (let i = 0; i < letters.length; i++) {
@@ -44,14 +45,14 @@ export interface CellAddress {
 /** `"B3" → { row: 3, col: 2 }`. Throws on anything else (`"B0"`, `"$B$3"`, `"3B"`). */
 export function parseRef(ref: string): CellAddress {
   const m = REF_RE.exec(ref)
-  if (!m) throw new Error(`@uekichinos/quire: invalid cell reference "${ref}"`)
+  if (!m) throw new QuireError(`invalid cell reference "${ref}"`)
   return { col: colNumber(m[1]!), row: Number(m[2]) }
 }
 
 /** `(3, 2) → "B3"`. */
 export function toRef(row: number, col: number): string {
   if (!Number.isInteger(row) || row < 1) {
-    throw new Error(`@uekichinos/quire: row number must be a positive integer, got ${row}`)
+    throw new QuireError(`row number must be a positive integer, got ${row}`)
   }
   return colLetter(col) + row
 }
