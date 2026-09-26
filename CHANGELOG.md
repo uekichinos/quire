@@ -2,7 +2,10 @@
 
 All notable changes to `@uekichinos/quire` are documented here.
 
-## [Unreleased]
+## [0.4.0] - 2026-09-26
+
+Hyperlinks, defined names, and column/row default styles — read and write.
+Plus a formula/date-read fix. Still **one runtime dependency** (`fflate`).
 
 ### Defined names (read + write)
 - Write: `wb.defineName(name, sheetName, range)` — a workbook-scoped named
