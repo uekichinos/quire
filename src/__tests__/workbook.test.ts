@@ -232,3 +232,151 @@ describe('createWorkbook — output', () => {
     expect(blob.size).toBeGreaterThan(400)
   })
 })
+
+describe('createWorkbook — hyperlinks', () => {
+  it('writes a <hyperlinks> block plus a worksheet rels part', () => {
+    const parts = build((wb) => {
+      const s = wb.addWorksheet('S')
+      s.addRow([{ hyperlink: 'https://example.com', text: 'Example', tooltip: 'go there' }])
+    })
+    expect(parts['xl/worksheets/sheet1.xml']).toContain(
+      '<hyperlinks><hyperlink r:id="rId1" ref="A1" tooltip="go there"/></hyperlinks>',
+    )
+    expect(parts['xl/worksheets/sheet1.xml']).toContain('xmlns:r=')
+    expect(parts['xl/worksheets/_rels/sheet1.xml.rels']).toContain(
+      '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink" Target="https://example.com" TargetMode="External"/>',
+    )
+    // the cell text itself is a normal shared string
+    expect(parts['xl/sharedStrings.xml']).toContain('Example')
+  })
+
+  it('defaults the displayed text to the target URL when omitted', () => {
+    const parts = build((wb) => wb.addWorksheet('S').setCell('A1', { hyperlink: 'mailto:a@b.com' }))
+    expect(parts['xl/sharedStrings.xml']).toContain('mailto:a@b.com')
+  })
+
+  it('omits the rels part and <hyperlinks> block when there are none', () => {
+    const parts = build((wb) => wb.addWorksheet('S').addRow(['plain']))
+    expect(parts['xl/worksheets/_rels/sheet1.xml.rels']).toBeUndefined()
+    expect(parts['xl/worksheets/sheet1.xml']).not.toContain('<hyperlinks>')
+  })
+
+  it('overwriting a cell drops its hyperlink', () => {
+    const parts = build((wb) => {
+      const s = wb.addWorksheet('S')
+      s.setCell('A1', { hyperlink: 'https://example.com' })
+      s.setCell('A1', 'plain again')
+    })
+    expect(parts['xl/worksheets/sheet1.xml']).not.toContain('<hyperlinks>')
+    expect(parts['xl/worksheets/_rels/sheet1.xml.rels']).toBeUndefined()
+  })
+
+  it('rejects an empty or over-long hyperlink target', () => {
+    const wb = createWorkbook()
+    const s = wb.addWorksheet('S')
+    expect(() => s.setCell('A1', { hyperlink: '' })).toThrow(/non-empty/)
+    expect(() => s.setCell('A1', { hyperlink: 'https://x.com/' + 'a'.repeat(2100) })).toThrow(
+      /exceeds/,
+    )
+  })
+
+  it('round-trips through readWorkbook, including with a per-cell style', () => {
+    const wb = createWorkbook()
+    const s = wb.addWorksheet('S')
+    s.addRow([{ hyperlink: 'https://example.com', text: 'Example', tooltip: 'hi' }])
+    s.setCell('B1', { hyperlink: 'https://y.com', text: 'Y' }, { font: { bold: true } })
+    const back = readWorkbook(wb.xlsx())
+    const sheet = back.sheet('S')!
+    expect(sheet.cell('A1')).toMatchObject({
+      value: 'Example',
+      hyperlink: { target: 'https://example.com', tooltip: 'hi' },
+    })
+    expect(sheet.cell('B1')).toMatchObject({
+      value: 'Y',
+      hyperlink: { target: 'https://y.com' },
+    })
+  })
+
+  it('is idempotent across repeated xlsx() calls', () => {
+    const wb = createWorkbook()
+    wb.addWorksheet('S').addRow([{ hyperlink: 'https://example.com', text: 'Example' }])
+    const first = wb.xlsx()
+    const second = wb.xlsx()
+    expect(Array.from(second)).toEqual(Array.from(first))
+  })
+})
+
+describe('createWorkbook — defined names', () => {
+  it('writes a workbook-scoped named range', () => {
+    const parts = build((wb) => {
+      wb.addWorksheet('Sales').addRow(['h'])
+      wb.defineName('SalesRange', 'Sales', 'A1:B10')
+    })
+    expect(parts['xl/workbook.xml']).toContain(
+      `<definedName name="SalesRange">'Sales'!$A$1:$B$10</definedName>`,
+    )
+  })
+
+  it('accepts a single-cell target', () => {
+    const parts = build((wb) => {
+      wb.addWorksheet('S').addRow(['h'])
+      wb.defineName('Anchor', 'S', 'A1')
+    })
+    expect(parts['xl/workbook.xml']).toContain(
+      `<definedName name="Anchor">'S'!$A$1</definedName>`,
+    )
+  })
+
+  it('coexists with the internal autoFilter defined name', () => {
+    const parts = build((wb) => {
+      const s = wb.addWorksheet('S')
+      s.addRow(['h']).autoFilter('A1:A1')
+      wb.defineName('MyRange', 'S', 'A1')
+    })
+    expect(parts['xl/workbook.xml']).toContain('_xlnm._FilterDatabase')
+    expect(parts['xl/workbook.xml']).toContain('name="MyRange"')
+  })
+
+  it('rejects invalid, duplicate, reserved and unresolvable names', () => {
+    const wb = createWorkbook()
+    wb.addWorksheet('S').addRow(['h'])
+    expect(() => wb.defineName('A1', 'S', 'A1')).toThrow(/cell reference/)
+    expect(() => wb.defineName('has space', 'S', 'A1')).toThrow(/must start with/)
+    expect(() => wb.defineName('_xlnm.Foo', 'S', 'A1')).toThrow(/reserved/)
+    expect(() => wb.defineName('Good', 'NoSuchSheet', 'A1')).toThrow(/no worksheet/)
+    expect(() => wb.defineName('Good', 'S', 'not a ref')).toThrow(/invalid cell reference/)
+    wb.defineName('Dup', 'S', 'A1')
+    expect(() => wb.defineName('Dup', 'S', 'B1')).toThrow(/duplicate/)
+    expect(() => wb.defineName('dup', 'S', 'B1')).toThrow(/duplicate/) // case-insensitive
+  })
+
+  it('round-trips through readWorkbook', () => {
+    const wb = createWorkbook()
+    wb.addWorksheet('Sales').addRow(['h'])
+    wb.defineName('SalesRange', 'Sales', 'A1:B10')
+    const back = readWorkbook(wb.xlsx())
+    expect(back.definedNames).toEqual([
+      { name: 'SalesRange', sheetName: 'Sales', range: 'A1:B10', refersTo: "'Sales'!$A$1:$B$10", hidden: undefined },
+    ])
+  })
+})
+
+describe('createWorkbook — row default style (empty cells)', () => {
+  it('emits s + customFormat on a row with a style but no populated cells', () => {
+    const parts = build((wb) => {
+      const s = wb.addWorksheet('S')
+      s.setRow(2, { style: { fill: 'FF00FF00' } })
+      s.addRow(['a']).addRow(['b']).addRow(['c'])
+    })
+    expect(parts['xl/worksheets/sheet1.xml']).toMatch(/<row r="2" s="\d+" customFormat="1">/)
+  })
+
+  it('round-trips into ReadWorksheet.rowStyles under { styles: true }', () => {
+    const wb = createWorkbook()
+    const s = wb.addWorksheet('S')
+    s.setRow(2, { style: { font: { bold: true } } })
+    s.addRow(['a']).addRow(['b']).addRow(['c'])
+    const sheet = readWorkbook(wb.xlsx(), { styles: true }).sheet('S')!
+    expect(sheet.rowStyles.get(2)).toMatchObject({ font: { bold: true } })
+  })
+})

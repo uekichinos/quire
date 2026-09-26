@@ -2,6 +2,43 @@
 
 All notable changes to `@uekichinos/quire` are documented here.
 
+## [Unreleased]
+
+### Defined names (read + write)
+- Write: `wb.defineName(name, sheetName, range)` — a workbook-scoped named
+  range (single cell or `A1:C3`-style range). Validated against Excel's
+  identifier rules (can't look like a cell reference, can't use the
+  `_xlnm.` prefix) and de-duplicated case-insensitively
+- Read: `wb.definedNames` lists them, excluding Excel-internal names like
+  `_xlnm._FilterDatabase`; each entry resolves `sheetName`/`range` when the
+  reference is a simple single-sheet range, else keeps `refersTo` raw
+
+### Column/row default styles
+- Writer: `setRow(i, { style })` now also stamps the `<row customFormat="1"
+  s="…">` attributes (not just each populated cell's own `s`), so empty
+  cells in a styled row show the right formatting in Excel too — closes a
+  gap where the style was invisible on any cell without its own `<c>`
+- Reader: `sheet.columnStyles` / `sheet.rowStyles` (`Map<number, ReadStyle>`,
+  1-based) resolve `<col style>` / `<row customFormat s>` under `{ styles:
+  true }` — what an empty cell in that column/row would look like
+
+### Hyperlinks (read + write)
+- Write: `{ hyperlink, text?, tooltip? }` as a cell value — `text` defaults to
+  the URL, `tooltip` is the hover text. Emits a `<hyperlinks>` block in the
+  worksheet plus a `_rels/sheetN.xml.rels` part (external `TargetMode`);
+  re-setting the cell to a non-hyperlink value drops it. Targets capped at
+  2,079 characters (Excel's practical limit)
+- Read: `ReadCell.hyperlink` → `{ target, tooltip? }`, resolved from the
+  worksheet's own relationships (external) or a bare `location` attribute
+  (in-workbook links); a range `ref` attaches to its top-left cell; a dangling
+  relationship id is ignored rather than thrown
+- `xl/worksheets/_rels/*.xml.rels` added to the read allow-list
+
+### Fixed
+- **Formula cells with a date number-format now read back as `Date`** — the
+  cached result was always coerced to a plain number regardless of style,
+  unlike the equivalent non-formula numeric cell
+
 ## [0.3.0] - 2026-09-08
 
 Cell styles on read, plus a round of writer/reader hardening. Still **one

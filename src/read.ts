@@ -17,6 +17,13 @@ export type ReadCellType =
   | 'error'
   | 'empty'
 
+/** A hyperlink resolved from the worksheet's own `_rels/*.rels` part. */
+export interface ReadHyperlink {
+  /** The target URI (external link) or in-workbook location (e.g. `"Sheet2!A1"`). */
+  target: string
+  tooltip?: string
+}
+
 export interface ReadCell {
   /** A1 reference, e.g. `'B2'`. */
   ref: string
@@ -29,6 +36,8 @@ export interface ReadCell {
   formula?: string
   /** The cell's number-format code, when it has a non-`General` format. */
   numFmt?: string
+  /** Present when the cell carries a hyperlink. */
+  hyperlink?: ReadHyperlink
   /** Resolved cell style — only when `readWorkbook(bytes, { styles: true })`. */
   style?: ReadStyle
 }
@@ -68,6 +77,16 @@ export interface ReadWorksheet {
   readonly dimension: { rows: number; cols: number }
   /** Merged ranges, e.g. `['A1:C1']`. */
   readonly merges: readonly string[]
+  /**
+   * Column default styles (1-based column → style), from `<col style="…">` — only
+   * populated under `{ styles: true }`. Applies to cells with no `<c>` element at all.
+   */
+  readonly columnStyles: ReadonlyMap<number, ReadStyle>
+  /**
+   * Row default styles (1-based row → style), from `<row customFormat="1" s="…">` — only
+   * populated under `{ styles: true }`. Applies to cells with no `<c>` element at all.
+   */
+  readonly rowStyles: ReadonlyMap<number, ReadStyle>
   /** One cell by A1 reference, or `undefined` if empty/out of range. */
   cell(ref: string): ReadCell | undefined
   /** Iterate the populated rows; each is a sparse array indexed by `col - 1`. */
@@ -78,10 +97,24 @@ export interface ReadWorksheet {
   values(options?: ValuesOptions): (string | number | boolean | Date | null)[][]
 }
 
+/** A workbook-level named range, e.g. `{ name: 'SalesRange', sheetName: 'Sales', range: 'A1:B10' }`. */
+export interface ReadDefinedName {
+  name: string
+  /** The sheet the reference resolves to — `undefined` if it isn't a simple single-sheet range. */
+  sheetName?: string
+  /** The range or single cell, without `$` signs, e.g. `'A1:B10'`. */
+  range?: string
+  /** The raw stored reference text, in case it isn't a simple single-sheet range. */
+  refersTo: string
+  hidden?: boolean
+}
+
 export interface ReadWorkbook {
   readonly sheetNames: string[]
   readonly sheets: ReadWorksheet[]
   readonly date1904: boolean
+  /** User-defined named ranges (Excel-internal ones like `_xlnm._FilterDatabase` are excluded). */
+  readonly definedNames: readonly ReadDefinedName[]
   sheet(nameOrIndex: string | number): ReadWorksheet | undefined
 }
 
@@ -94,9 +127,32 @@ interface SheetRef {
   rid: string
 }
 
-function parseWorkbook(xml: string): { sheets: SheetRef[]; date1904: boolean } {
+interface RawDefinedName {
+  name: string
+  refersTo: string
+  hidden: boolean
+}
+
+/** `'Sheet 1'!$A$1:$B$2` or `Sheet1!$A$1` → `{ sheetName, range }`, `$`s stripped. Anything else: `{}`. */
+const DEFINED_NAME_REF_RE =
+  /^(?:'((?:[^']|'')+)'|([A-Za-z_][A-Za-z0-9_.]*))!(\$?[A-Za-z]+\$?[0-9]+(?::\$?[A-Za-z]+\$?[0-9]+)?)$/
+
+function parseDefinedNameRef(refersTo: string): { sheetName?: string; range?: string } {
+  const m = DEFINED_NAME_REF_RE.exec(refersTo.trim())
+  if (!m) return {}
+  const sheetName = (m[1] ?? m[2])?.replace(/''/g, "'")
+  const range = m[3]!.replace(/\$/g, '')
+  return { sheetName, range }
+}
+
+function parseWorkbook(
+  xml: string,
+): { sheets: SheetRef[]; date1904: boolean; definedNames: RawDefinedName[] } {
   const sheets: SheetRef[] = []
+  const definedNames: RawDefinedName[] = []
   let date1904 = false
+  let curName: { name: string; hidden: boolean } | null = null
+  let buf = ''
   parseXml(xml, {
     onOpen(name, attrs) {
       if (name === 'sheet' || name.endsWith(':sheet')) {
@@ -105,10 +161,22 @@ function parseWorkbook(xml: string): { sheets: SheetRef[]; date1904: boolean } {
       } else if (name === 'workbookPr' || name.endsWith(':workbookPr')) {
         const v = attrs.date1904
         date1904 = v === '1' || v === 'true'
+      } else if (name === 'definedName' || name.endsWith(':definedName')) {
+        curName = { name: attrs.name ?? '', hidden: attrs.hidden === '1' }
+        buf = ''
+      }
+    },
+    onText(text) {
+      if (curName) buf += text
+    },
+    onClose(name) {
+      if ((name === 'definedName' || name.endsWith(':definedName')) && curName) {
+        definedNames.push({ ...curName, refersTo: buf })
+        curName = null
       }
     },
   })
-  return { sheets, date1904 }
+  return { sheets, date1904, definedNames }
 }
 
 function parseWorkbookRels(xml: string): Map<string, string> {
@@ -121,6 +189,17 @@ function parseWorkbookRels(xml: string): Map<string, string> {
         target = target.replace(/^\/?xl\//, '').replace(/^\//, '')
         rels.set(attrs.Id, `xl/${target}`.toLowerCase())
       }
+    },
+  })
+  return rels
+}
+
+/** A worksheet's own `_rels/sheetN.xml.rels` — targets kept verbatim (external URIs). */
+function parseSheetRels(xml: string): Map<string, string> {
+  const rels = new Map<string, string>()
+  parseXml(xml, {
+    onOpen(name, attrs) {
+      if (name === 'Relationship' && attrs.Id && attrs.Target) rels.set(attrs.Id, attrs.Target)
     },
   })
   return rels
@@ -149,13 +228,27 @@ function parseSharedStrings(xml: string): string[] {
   return list
 }
 
+interface RawHyperlink {
+  ref: string
+  rid?: string
+  location?: string
+  tooltip?: string
+}
+
 interface RawSheet {
   cells: Map<number, Map<number, ReadCell>>
   maxRow: number
   maxCol: number
   dimRef?: string
   merges: string[]
+  hyperlinks: RawHyperlink[]
+  columnStyles: Map<number, ReadStyle>
+  rowStyles: Map<number, ReadStyle>
 }
+
+// Excel's column ceiling (XFD) — also the hard cap on how many <col> style
+// entries we'll ever expand into, so a hostile file can't force unbounded work.
+const MAX_COLUMN = 16384
 
 interface SheetParseCtx {
   sst: string[]
@@ -189,6 +282,10 @@ function parseSheet(xml: string, ctx: SheetParseCtx): RawSheet {
   const { sst, styles, date1904, dates, withStyles, counter, maxCells } = ctx
   const cells = new Map<number, Map<number, ReadCell>>()
   const merges: string[] = []
+  const hyperlinks: RawHyperlink[] = []
+  const columnStyleIdx = new Map<number, number>()
+  const rowStyleIdx = new Map<number, number>()
+  let colStyleBudget = MAX_COLUMN
   let maxRow = 0
   let maxCol = 0
   let dimRef: string | undefined
@@ -226,7 +323,14 @@ function parseSheet(xml: string, ctx: SheetParseCtx): RawSheet {
       if (cType === 'str') value = vBuf
       else if (cType === 'b') value = vBuf === '1'
       else if (cType === 'e') value = vBuf
-      else value = vBuf === '' ? null : Number(vBuf)
+      else if (vBuf === '') value = null
+      else {
+        const num = Number(vBuf)
+        value =
+          dates && cStyle >= 0 && Number.isFinite(num) && isDateStyle(cStyle, styles)
+            ? serialToDate(num, date1904)
+            : num
+      }
     } else if (cType === 's') {
       const idx = Number(vBuf)
       value = Number.isInteger(idx) && idx >= 0 && idx < sst.length ? sst[idx]! : ''
@@ -289,10 +393,39 @@ function parseSheet(xml: string, ctx: SheetParseCtx): RawSheet {
         case 'mergeCell':
           if (attrs.ref) merges.push(attrs.ref)
           break
-        case 'row':
+        case 'hyperlink':
+          if (attrs.ref) {
+            hyperlinks.push({
+              ref: attrs.ref,
+              rid: attrs['r:id'],
+              location: attrs.location,
+              tooltip: attrs.tooltip,
+            })
+          }
+          break
+        case 'row': {
           curRow = attrs.r ? Number(attrs.r) : lastRow + 1
           curCol = 0
+          if (withStyles && attrs.customFormat === '1' && attrs.s !== undefined) {
+            const idx = Number(attrs.s)
+            if (Number.isInteger(idx) && idx >= 0) rowStyleIdx.set(curRow, idx)
+          }
           break
+        }
+        case 'col': {
+          if (withStyles && attrs.style !== undefined && colStyleBudget > 0) {
+            const idx = Number(attrs.style)
+            if (Number.isInteger(idx) && idx >= 0) {
+              const min = Math.max(1, Number(attrs.min) || 1)
+              const max = Math.min(Number(attrs.max) || min, MAX_COLUMN)
+              for (let c = min; c <= max && colStyleBudget > 0; c++) {
+                columnStyleIdx.set(c, idx)
+                colStyleBudget--
+              }
+            }
+          }
+          break
+        }
         case 'c': {
           cRef = attrs.r ?? ''
           cType = attrs.t ?? ''
@@ -348,7 +481,20 @@ function parseSheet(xml: string, ctx: SheetParseCtx): RawSheet {
     },
   })
 
-  return { cells, maxRow, maxCol, dimRef, merges }
+  const columnStyles = new Map<number, ReadStyle>()
+  const rowStyles = new Map<number, ReadStyle>()
+  if (withStyles && styles) {
+    for (const [col, idx] of columnStyleIdx) {
+      const st = styles.xfStyle[idx]
+      if (st && Object.keys(st).length) columnStyles.set(col, st)
+    }
+    for (const [row, idx] of rowStyleIdx) {
+      const st = styles.xfStyle[idx]
+      if (st && Object.keys(st).length) rowStyles.set(row, st)
+    }
+  }
+
+  return { cells, maxRow, maxCol, dimRef, merges, hyperlinks, columnStyles, rowStyles }
 }
 
 /* -------------------------------------------------------------------------- */
@@ -358,6 +504,8 @@ function parseSheet(xml: string, ctx: SheetParseCtx): RawSheet {
 class Worksheet implements ReadWorksheet {
   readonly dimension: { rows: number; cols: number }
   readonly merges: readonly string[]
+  readonly columnStyles: ReadonlyMap<number, ReadStyle>
+  readonly rowStyles: ReadonlyMap<number, ReadStyle>
 
   constructor(
     readonly name: string,
@@ -366,8 +514,12 @@ class Worksheet implements ReadWorksheet {
     private readonly maxCol: number,
     merges: string[],
     dimRef?: string,
+    columnStyles: Map<number, ReadStyle> = new Map(),
+    rowStyles: Map<number, ReadStyle> = new Map(),
   ) {
     this.merges = merges
+    this.columnStyles = columnStyles
+    this.rowStyles = rowStyles
     if (dimRef && dimRef.includes(':')) {
       const [, br] = dimRef.split(':')
       const p = parseRef(br!)
@@ -426,6 +578,7 @@ function lastIndex(row: readonly unknown[]): number {
 interface Prepared {
   sheetRefs: SheetRef[]
   date1904: boolean
+  definedNames: ReadDefinedName[]
   /** Build one worksheet, or `null` if the `sheets` filter excludes it. */
   buildSheet(sr: SheetRef, index: number): Worksheet | null
 }
@@ -435,7 +588,17 @@ function prepare(input: Uint8Array | ArrayBuffer, options: ReadOptions): Prepare
   const limits: ReadLimits = { ...DEFAULT_READ_LIMITS, ...options.limits }
   const parts = extractParts(bytes, limits)
 
-  const { sheets: sheetRefs, date1904 } = parseWorkbook(parts.get('xl/workbook.xml')!)
+  const {
+    sheets: sheetRefs,
+    date1904,
+    definedNames: rawDefinedNames,
+  } = parseWorkbook(parts.get('xl/workbook.xml')!)
+  const definedNames: ReadDefinedName[] = rawDefinedNames
+    .filter((d) => !d.name.toLowerCase().startsWith('_xlnm.'))
+    .map((d) => {
+      const { sheetName, range } = parseDefinedNameRef(d.refersTo)
+      return { name: d.name, sheetName, range, refersTo: d.refersTo, hidden: d.hidden || undefined }
+    })
   if (sheetRefs.length > limits.maxSheets) {
     throw new XlsxReadError(`workbook has ${sheetRefs.length} sheets (limit ${limits.maxSheets})`)
   }
@@ -478,6 +641,7 @@ function prepare(input: Uint8Array | ArrayBuffer, options: ReadOptions): Prepare
   return {
     sheetRefs,
     date1904,
+    definedNames,
     buildSheet(sr, index) {
       if (!shouldLoad(sr.name, index)) return null
       const target = rels.get(sr.rid) ?? `xl/worksheets/sheet${index + 1}.xml`
@@ -486,16 +650,45 @@ function prepare(input: Uint8Array | ArrayBuffer, options: ReadOptions): Prepare
         throw new XlsxReadError(`worksheet part "${target}" for sheet "${sr.name}" is missing`)
       }
       const raw = parseSheet(xml, ctx)
-      return new Worksheet(sr.name, raw.cells, raw.maxRow, raw.maxCol, raw.merges, raw.dimRef)
+
+      if (raw.hyperlinks.length) {
+        const relsPath = target.replace(/\/([^/]+)$/, '/_rels/$1.rels').toLowerCase()
+        const sheetRels = parts.has(relsPath) ? parseSheetRels(parts.get(relsPath)!) : null
+        for (const hl of raw.hyperlinks) {
+          const linkTarget = hl.rid ? sheetRels?.get(hl.rid) : hl.location
+          if (!linkTarget) continue
+          // A hyperlink's `ref` can be a range; we only attach it to the top-left cell.
+          const first = hl.ref.split(':')[0]!
+          const { row, col } = parseRef(first)
+          const cell = raw.cells.get(row)?.get(col)
+          if (cell) cell.hyperlink = { target: linkTarget, tooltip: hl.tooltip }
+        }
+      }
+
+      return new Worksheet(
+        sr.name,
+        raw.cells,
+        raw.maxRow,
+        raw.maxCol,
+        raw.merges,
+        raw.dimRef,
+        raw.columnStyles,
+        raw.rowStyles,
+      )
     },
   }
 }
 
-function assemble(built: Worksheet[], date1904: boolean): ReadWorkbook {
+function assemble(
+  built: Worksheet[],
+  date1904: boolean,
+  definedNames: readonly ReadDefinedName[],
+): ReadWorkbook {
   return {
     sheetNames: built.map((s) => s.name),
     sheets: built,
     date1904,
+    definedNames,
     sheet(nameOrIndex) {
       return typeof nameOrIndex === 'number'
         ? built[nameOrIndex]
@@ -517,13 +710,13 @@ export function readWorkbook(
   input: Uint8Array | ArrayBuffer,
   options: ReadOptions = {},
 ): ReadWorkbook {
-  const { sheetRefs, date1904, buildSheet } = prepare(input, options)
+  const { sheetRefs, date1904, definedNames, buildSheet } = prepare(input, options)
   const built: Worksheet[] = []
   sheetRefs.forEach((sr, i) => {
     const w = buildSheet(sr, i)
     if (w) built.push(w)
   })
-  return assemble(built, date1904)
+  return assemble(built, date1904, definedNames)
 }
 
 /**
@@ -535,12 +728,12 @@ export async function readWorkbookAsync(
   input: Uint8Array | ArrayBuffer,
   options: ReadOptions = {},
 ): Promise<ReadWorkbook> {
-  const { sheetRefs, date1904, buildSheet } = prepare(input, options)
+  const { sheetRefs, date1904, definedNames, buildSheet } = prepare(input, options)
   const built: Worksheet[] = []
   for (let i = 0; i < sheetRefs.length; i++) {
     const w = buildSheet(sheetRefs[i]!, i)
     if (w) built.push(w)
     await Promise.resolve()
   }
-  return assemble(built, date1904)
+  return assemble(built, date1904, definedNames)
 }

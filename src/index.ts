@@ -15,6 +15,7 @@ export type {
   CellInput,
   CellScalar,
   FormulaValue,
+  HyperlinkValue,
   AddRowOptions,
   RowOptions,
   ColumnSpec,
@@ -42,6 +43,8 @@ export type {
   ReadStyle,
   ReadFont,
   ReadBorderEdge,
+  ReadHyperlink,
+  ReadDefinedName,
 } from './read'
 export { QuireError } from './errors'
 export { XlsxReadError } from './unzip'

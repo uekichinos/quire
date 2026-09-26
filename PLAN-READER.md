@@ -251,6 +251,33 @@ Fixes found in a self-review of the reader/writer:
 - **tests** — `numToXml` unit, idempotency, real-world-quirk fixture corpus,
   seeded tokenizer fuzz suite, happy-dom browser round-trip. 202 total.
 
+### R6 — hyperlinks ✅ done (unreleased)
+Write: `{ hyperlink, text?, tooltip? }` cell value → `<hyperlinks>` +
+`_rels/sheetN.xml.rels` (external `TargetMode`), 2,079-char cap. Read:
+`ReadCell.hyperlink` resolved via the worksheet's own relationships or a bare
+`location` (in-workbook links); range refs attach to the top-left cell;
+dangling relationship ids are ignored. Also fixed: formula cells with a date
+number-format now read back as `Date` (previously always coerced to a plain
+number). 13 new tests.
+**Deferred:** defined names / named ranges, column/row-level styles on read,
+rich text runs.
+
+### R7 — defined names + column/row default styles ✅ done (unreleased)
+Write: `wb.defineName(name, sheetName, range)` — workbook-scoped only, Excel
+identifier rules enforced, de-duplicated case-insensitively; emits into
+`<definedNames>` alongside the existing internal `_xlnm._FilterDatabase`
+entries. Read: `wb.definedNames`, excluding `_xlnm.*` names; resolves
+`sheetName`/`range` for a simple single-sheet reference, else raw `refersTo`.
+Also: the writer now stamps `<row customFormat="1" s="…">` when a row has a
+style (previously only baked into each populated cell's own `s`, invisible to
+any cell without a `<c>` element) — closing the gap that made column/row
+default styles unreadable from quire's own output. Reader gains
+`sheet.columnStyles` / `sheet.rowStyles` (`Map<number, ReadStyle>`) resolving
+`<col style>` / `<row customFormat s>` under `{ styles: true }`, bounded to
+16,384 column-style writes per sheet regardless of how many `<col>` elements a
+hostile file contains. 12 new tests.
+**Still deferred:** sheet-scoped defined names, rich text runs.
+
 ---
 
 ## 9. Questions for you
@@ -264,5 +291,6 @@ Still open:
 2. **API** — the `sheet.cell()/rows()` accessor, or a flat
    `{ sheets: [{ name, rows }] }` snapshot?
 3. **Version** — land as `0.2.0`?
-4. **Defined names / named ranges** — surface them, or skip for v1?
-5. **Hyperlinks on read** — v1 or a later minor?
+4. ✅ **Defined names / named ranges** — decided: a later minor, shipped in
+   R7 (workbook-scoped only; sheet-scoped still deferred).
+5. ✅ **Hyperlinks on read** — decided: a later minor, shipped in R6.

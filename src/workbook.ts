@@ -5,16 +5,18 @@ import {
   appXml,
   contentTypesXml,
   coreXml,
+  type DefinedNameEntry,
   rootRelsXml,
   sharedStringsXml,
   workbookRelsXml,
   workbookXml,
+  worksheetRelsXml,
   worksheetXml,
 } from './serialize'
 import { StylePool } from './style-pool'
 import { isEmptyStyle, mergeStyle, type CellStyle } from './style'
 import { numToXml } from './number'
-import { escapeText } from './xml'
+import { attr, escapeText } from './xml'
 import { zipParts } from './zip'
 
 /** A formula cell: an A1 formula without the leading `=`, plus an optional cached result. */
@@ -23,8 +25,27 @@ export interface FormulaValue {
   result?: string | number | boolean
 }
 
+/**
+ * A hyperlink cell: `hyperlink` is the target URI (`http(s)://`, `mailto:`, …);
+ * `text` is what's displayed (defaults to `hyperlink` itself); `tooltip` is the
+ * hover text Excel shows.
+ */
+export interface HyperlinkValue {
+  hyperlink: string
+  text?: string
+  tooltip?: string
+}
+
 /** Scalar values a cell can hold. */
-export type CellScalar = string | number | boolean | Date | FormulaValue | null | undefined
+export type CellScalar =
+  | string
+  | number
+  | boolean
+  | Date
+  | FormulaValue
+  | HyperlinkValue
+  | null
+  | undefined
 
 /** A cell may be given as a bare value, or as `{ value, style }` for per-cell formatting. */
 export type CellInput = CellScalar | { value: CellScalar; style?: CellStyle }
@@ -68,6 +89,12 @@ const XLSX_MIME = 'application/vnd.openxmlformats-officedocument.spreadsheetml.s
 const INVALID_NAME_CHARS = /[\\/?*[\]:]/
 const MAX_COL = 16384
 const RANGE_RE = /^([A-Z]+[1-9][0-9]*):([A-Z]+[1-9][0-9]*)$/
+// Excel's practical hyperlink-target limit (2019+; older versions cap at 255).
+const MAX_HYPERLINK_LEN = 2079
+// Excel identifier rules: starts with a letter/underscore/backslash, then word chars or dots.
+const DEFINED_NAME_RE = /^[A-Za-z_\\][A-Za-z0-9_.]*$/
+// Rejects names that read as a plain cell reference (Excel disallows these too).
+const CELL_LIKE_NAME_RE = /^[A-Za-z]{1,3}[0-9]{1,7}$/
 
 function validateSheetName(name: string, taken: readonly string[]): void {
   if (typeof name !== 'string' || name.length === 0 || name.length > 31) {
@@ -95,6 +122,32 @@ function parseRange(range: string): { top: number; left: number; bottom: number;
   return { top: a.row, left: a.col, bottom: b.row, right: b.col }
 }
 
+function validateDefinedName(name: string, taken: ReadonlySet<string>): void {
+  if (typeof name !== 'string' || name.length === 0 || name.length > 255) {
+    throw new QuireError('defined name must be 1–255 characters')
+  }
+  if (!DEFINED_NAME_RE.test(name)) {
+    throw new QuireError(
+      `defined name "${name}" must start with a letter, "_" or "\\", and contain only letters, digits, "_" and "."`,
+    )
+  }
+  if (CELL_LIKE_NAME_RE.test(name)) {
+    throw new QuireError(`defined name "${name}" looks like a cell reference, which Excel disallows`)
+  }
+  if (name.toLowerCase().startsWith('_xlnm.')) {
+    throw new QuireError(`defined name "${name}" uses the "_xlnm." prefix, reserved for Excel`)
+  }
+  if (taken.has(name.toLowerCase())) {
+    throw new QuireError(`duplicate defined name "${name}"`)
+  }
+}
+
+/** Accepts a single cell ("A1") or a range ("A1:C3"); throws on anything else. */
+function validateNamedRangeTarget(range: string): void {
+  if (range.includes(':')) parseRange(range)
+  else parseRef(range)
+}
+
 function isFormula(v: unknown): v is FormulaValue {
   return typeof v === 'object' && v !== null && typeof (v as FormulaValue).formula === 'string'
 }
@@ -102,6 +155,12 @@ function isFormula(v: unknown): v is FormulaValue {
 function isStyledCell(v: unknown): v is { value: CellScalar; style?: CellStyle } {
   return (
     typeof v === 'object' && v !== null && !(v instanceof Date) && 'value' in v && !isFormula(v)
+  )
+}
+
+function isHyperlinkValue(v: unknown): v is HyperlinkValue {
+  return (
+    typeof v === 'object' && v !== null && typeof (v as HyperlinkValue).hyperlink === 'string'
   )
 }
 
@@ -159,6 +218,8 @@ class QuireWorksheet implements Worksheet {
   private nextRow = 1
   private maxRow = 0
   private maxCol = 0
+  private hyperlinks = new Map<string, { target: string; tooltip?: string }>()
+  private hyperlinkRels: { id: string; target: string }[] = []
 
   // The workbook passes a fresh shared-strings table + style pool into
   // `serialize()` each time, so `xlsx()` is pure and repeatable.
@@ -262,7 +323,21 @@ class QuireWorksheet implements Worksheet {
 
   private put(row: number, col: number, value: CellScalar, style?: CellStyle): void {
     if (value === null || value === undefined) return
-    const stored: StoredScalar = value
+    const ref = toRef(row, col)
+    let stored: StoredScalar
+    if (isHyperlinkValue(value)) {
+      if (!value.hyperlink) {
+        throw new QuireError(`hyperlink target for ${ref} must be a non-empty string`)
+      }
+      if (value.hyperlink.length > MAX_HYPERLINK_LEN) {
+        throw new QuireError(`hyperlink target for ${ref} exceeds ${MAX_HYPERLINK_LEN} characters`)
+      }
+      this.hyperlinks.set(ref, { target: value.hyperlink, tooltip: value.tooltip })
+      stored = value.text ?? value.hyperlink
+    } else {
+      this.hyperlinks.delete(ref)
+      stored = value
+    }
     let line = this.rows.get(row)
     if (!line) {
       line = new Map()
@@ -271,6 +346,11 @@ class QuireWorksheet implements Worksheet {
     line.set(col, { value: stored, style })
     this.maxRow = Math.max(this.maxRow, row)
     this.maxCol = Math.max(this.maxCol, col)
+  }
+
+  /** @internal — the `_rels/sheetN.xml.rels` part for this sheet's hyperlinks, if any. */
+  hyperlinkRelsXml(): string | undefined {
+    return this.hyperlinkRels.length ? worksheetRelsXml(this.hyperlinkRels) : undefined
   }
 
   /** @internal */
@@ -294,6 +374,11 @@ class QuireWorksheet implements Worksheet {
           : ''
         const attrs = [`r="${r}"`]
         if (meta?.height != null) attrs.push(`ht="${meta.height}"`, 'customHeight="1"')
+        // Also carried on the row itself (not just baked into each cell's own `s`) so
+        // cells with no `<c>` element at all still show the row's default style.
+        if (rowStyle && !isEmptyStyle(rowStyle)) {
+          attrs.push(`s="${this.pool.intern(rowStyle)}"`, 'customFormat="1"')
+        }
         return `<row ${attrs.join(' ')}>${cells}</row>`
       })
       .join('')
@@ -309,7 +394,25 @@ class QuireWorksheet implements Worksheet {
           this.merges.map((r) => `<mergeCell ref="${r}"/>`).join('') +
           `</mergeCells>`
         : undefined,
+      hyperlinks: this.hyperlinksXml(),
     })
+  }
+
+  private hyperlinksXml(): string | undefined {
+    if (this.hyperlinks.size === 0) {
+      this.hyperlinkRels = []
+      return undefined
+    }
+    // Rebuilt fresh every serialize() call so repeated xlsx()/blob() calls agree.
+    this.hyperlinkRels = []
+    const items: string[] = []
+    let n = 1
+    for (const [ref, hl] of this.hyperlinks) {
+      const id = `rId${n++}`
+      this.hyperlinkRels.push({ id, target: hl.target })
+      items.push(`<hyperlink r:id="${id}"${attr('ref', ref)}${attr('tooltip', hl.tooltip)}/>`)
+    }
+    return `<hyperlinks>${items.join('')}</hyperlinks>`
   }
 
   private colsXml(): string | undefined {
@@ -404,6 +507,12 @@ function sheetViewsXml(f: FreezeOptions): string {
 export interface Workbook {
   /** Add a worksheet. Names: 1–31 chars, unique (case-insensitive), no `\ / ? * [ ] :`. */
   addWorksheet(name: string, options?: WorksheetOptions): Worksheet
+  /**
+   * Define a workbook-scoped named range, e.g. `wb.defineName('SalesRange', 'Sales', 'A1:B10')`.
+   * `sheetName` must already have been added. Names follow Excel's identifier rules
+   * (letters/digits/`_`/`.`, can't look like a cell reference) and must be unique.
+   */
+  defineName(name: string, sheetName: string, range: string): this
   /** Serialise to an in-memory `.xlsx` byte array. */
   xlsx(): Uint8Array
   /** Serialise to a `Blob` (browser convenience). */
@@ -412,6 +521,8 @@ export interface Workbook {
 
 class QuireWorkbook implements Workbook {
   private sheets: QuireWorksheet[] = []
+  private definedNames: DefinedNameEntry[] = []
+  private definedNameKeys = new Set<string>()
 
   addWorksheet(name: string, options: WorksheetOptions = {}): Worksheet {
     validateSheetName(
@@ -421,6 +532,17 @@ class QuireWorkbook implements Workbook {
     const sheet = new QuireWorksheet(name, options)
     this.sheets.push(sheet)
     return sheet
+  }
+
+  defineName(name: string, sheetName: string, range: string): this {
+    validateDefinedName(name, this.definedNameKeys)
+    if (!this.sheets.some((s) => s.name === sheetName)) {
+      throw new QuireError(`defineName: no worksheet named "${sheetName}"`)
+    }
+    validateNamedRangeTarget(range)
+    this.definedNameKeys.add(name.toLowerCase())
+    this.definedNames.push({ name, sheetName, range })
+    return this
   }
 
   xlsx(): Uint8Array {
@@ -445,12 +567,17 @@ class QuireWorkbook implements Workbook {
       'xl/workbook.xml': workbookXml(
         this.sheets.map((s) => s.name),
         this.sheets.map((s) => s.getFilterRange()),
+        this.definedNames,
       ),
       'xl/_rels/workbook.xml.rels': workbookRelsXml(this.sheets.length, hasStrings),
       'xl/styles.xml': pool.toXml(),
     }
     sheetXmls.forEach((xml, i) => {
       parts[`xl/worksheets/sheet${i + 1}.xml`] = xml
+    })
+    this.sheets.forEach((s, i) => {
+      const rels = s.hyperlinkRelsXml()
+      if (rels) parts[`xl/worksheets/_rels/sheet${i + 1}.xml.rels`] = rels
     })
     if (hasStrings) {
       parts['xl/sharedStrings.xml'] = sharedStringsXml(sst.list, sst.total)

@@ -72,6 +72,7 @@ const url = URL.createObjectURL(wb.blob())
 | `Workbook` | |
 |---|---|
 | `addWorksheet(name, options?)` | `options`: `{ columns?, freeze?, autoFilter? }`. Name: 1–31 chars, unique, no `\ / ? * [ ] :` |
+| `defineName(name, sheetName, range)` | workbook-scoped named range, e.g. `wb.defineName('SalesRange', 'Sales', 'A1:B10')` |
 | `xlsx()` → `Uint8Array` | deterministic |
 | `blob()` → `Blob` | `spreadsheetml.sheet` mime |
 
@@ -85,10 +86,28 @@ const url = URL.createObjectURL(wb.blob())
 | `freeze({ xSplit?, ySplit? })` | frozen panes; `freeze({})` clears |
 | `autoFilter(range)` | header filter dropdowns |
 
-**Cell values:** `string · number · boolean · Date · { formula, result? } · null`.
-Dates use the 1900 serial system (default format `yyyy-mm-dd`). `null` /
-`undefined` cells are skipped but keep column position. Non-finite numbers and
-pre-1900 dates throw.
+**Cell values:** `string · number · boolean · Date · { formula, result? } ·
+{ hyperlink, text?, tooltip? } · null`. Dates use the 1900 serial system
+(default format `yyyy-mm-dd`). `null` / `undefined` cells are skipped but keep
+column position. Non-finite numbers and pre-1900 dates throw.
+
+**Hyperlinks:** `{ hyperlink: 'https://…', text?, tooltip? }` as a cell value —
+`text` (defaults to the URL itself) becomes the cell's string, `hyperlink` any
+URI (`http(s)://`, `mailto:`, …) up to 2,079 characters. Re-setting the cell to
+a non-hyperlink value drops it. `sheet.setCell('A1', { hyperlink, text }, style)`
+combines it with a style.
+
+**Defined names:** `wb.defineName(name, sheetName, range)` — `sheetName` must
+already be added, `range` a single cell (`'A1'`) or a range (`'A1:C3'`). Names
+follow Excel's identifier rules (start with a letter/`_`/`\`, then letters,
+digits, `_` or `.`; can't read as a cell reference; can't use the reserved
+`_xlnm.` prefix) and must be unique (case-insensitively). Workbook-scoped only
+— sheet-scoped names aren't supported yet.
+
+**Row/column default styles:** `sheet.setRow(i, { style })` / `setColumn(i, {
+style })` now also mark the row/column itself with that default style (not
+just each populated cell), so empty cells in a styled row or column show the
+right formatting in Excel too.
 
 **`CellStyle`:** `font` (`name`, `size`, `bold`, `italic`, `underline`, `color`)
 · `fill` (`'RRGGBB'` / `'AARRGGBB'`) · `align` (`horizontal`, `vertical`,
@@ -113,6 +132,7 @@ s.dimension                              // { rows, cols }
 s.merges                                 // ['A1:C1', …]
 s.cell('B2')                             // { ref, row, col, type, value, formula? }
 s.values()                               // (string|number|boolean|Date|null)[][]
+wb.definedNames                          // [{ name, sheetName?, range?, refersTo, hidden? }]
 
 for (const row of s.rows()) {            // sparse: row[col-1]
   console.log(row.map((c) => c?.value))
@@ -121,10 +141,13 @@ for (const row of s.rows()) {            // sparse: row[col-1]
 
 `ReadCell.type` is `'string' | 'number' | 'boolean' | 'date' | 'formula' |
 'error' | 'empty'`. Numbers with a date format become `Date` (opt out with
-`readWorkbook(bytes, { dates: false })`). Every cell also carries `.numFmt` (the
-resolved format code) when it has one. Formula cells carry both `.formula` (no
-leading `=`) and `.value` (the cached result). `{ sheets: [name|index] }` loads
-a subset.
+`readWorkbook(bytes, { dates: false })`) — formula cells get the same
+treatment from their cached result. Every cell also carries `.numFmt` (the
+resolved format code) when it has one, and `.hyperlink` (`{ target, tooltip? }`)
+when it carries one — external targets resolved via the worksheet's own
+relationships, in-workbook links via `location`. Formula cells carry both
+`.formula` (no leading `=`) and `.value` (the cached result). `{ sheets:
+[name|index] }` loads a subset.
 
 `readWorkbookAsync(bytes, options?)` returns the same `ReadWorkbook` but yields
 to the event loop between sheets, so a large import doesn't block. `s.values({
@@ -141,6 +164,15 @@ the limit throws `QuireError`.
 of the writer's `CellStyle`. `rgb` colours resolve exactly; indexed colours use
 the standard palette; theme colours are read from `xl/theme` (with the 0/1 swap
 and an approximate tint). Off by default — most imports only need values.
+Under the same option, `sheet.columnStyles` / `sheet.rowStyles` (`Map<number,
+ReadStyle>`, 1-based) expose column/row **default** styles — what an empty
+cell (no `<c>` element at all) in that column/row would look like.
+
+**Defined names** — `wb.definedNames` lists user-defined named ranges
+(`_xlnm._FilterDatabase` and other Excel-internal names are excluded). Each
+entry resolves `sheetName`/`range` when the reference is a simple single-sheet
+range; anything else (a formula, a multi-area reference, a named constant)
+keeps `refersTo` with `sheetName`/`range` left `undefined`.
 
 **Deliberately strict and small.** The XML is parsed by a ~200-line in-house
 tokenizer (not a dependency) that rejects `<!DOCTYPE>`, `<!ENTITY>`, `<![CDATA[>`
@@ -150,8 +182,8 @@ extracted, with uncompressed-size caps enforced before and after inflation.
 Still: parse untrusted uploads inside a worker with an overall time/memory limit.
 
 **Not read**: data validation, conditional formatting, images, charts, pivot
-tables, hyperlinks, defined names, column/row-level styles. Reading is aimed at
-files from mainstream tools (Excel, Google Sheets, LibreOffice, `openpyxl`,
+tables, rich text runs, sheet-scoped defined names. Reading is aimed at files
+from mainstream tools (Excel, Google Sheets, LibreOffice, `openpyxl`,
 `exceljs`, quire) — not corrupt files or every vendor quirk. See
 [`PLAN-READER.md`](./PLAN-READER.md).
 

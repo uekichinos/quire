@@ -61,6 +61,19 @@ export function rootRelsXml(): string {
   )
 }
 
+const REL_HYPERLINK = `${NS_R}/hyperlink`
+
+/** A worksheet's own `_rels/sheetN.xml.rels` — currently only hyperlink targets. */
+export function worksheetRelsXml(hyperlinks: readonly { id: string; target: string }[]): string {
+  const rels = hyperlinks
+    .map(
+      (h) =>
+        `<Relationship${attr('Id', h.id)} Type="${REL_HYPERLINK}"${attr('Target', h.target)} TargetMode="External"/>`,
+    )
+    .join('')
+  return `${XML_DECLARATION}\n<Relationships xmlns="${NS_PKG_REL}">${rels}</Relationships>`
+}
+
 export function workbookRelsXml(sheetCount: number, hasSharedStrings: boolean): string {
   const rels: string[] = []
   let id = 1
@@ -88,9 +101,17 @@ function absoluteSheetRange(sheetName: string, range: string): string {
   return `'${sheetName.replace(/'/g, "''")}'!${abs}`
 }
 
+/** A user-defined named range: `name` refers to `range` on `sheetName`. */
+export interface DefinedNameEntry {
+  name: string
+  sheetName: string
+  range: string
+}
+
 export function workbookXml(
   sheetNames: string[],
   filterRanges: readonly (string | undefined)[] = [],
+  definedNames: readonly DefinedNameEntry[] = [],
 ): string {
   const sheets = sheetNames
     .map(
@@ -99,7 +120,7 @@ export function workbookXml(
     )
     .join('')
 
-  const definedNames = sheetNames
+  const autoFilterNames = sheetNames
     .map((name, i) =>
       filterRanges[i]
         ? `<definedName name="_xlnm._FilterDatabase" localSheetId="${i}" hidden="1">` +
@@ -108,10 +129,20 @@ export function workbookXml(
     )
     .join('')
 
+  const userNames = definedNames
+    .map(
+      (d) =>
+        `<definedName${attr('name', d.name)}>` +
+        `${escapeText(absoluteSheetRange(d.sheetName, d.range))}</definedName>`,
+    )
+    .join('')
+
+  const allNames = autoFilterNames + userNames
+
   return (
     `${XML_DECLARATION}\n<workbook xmlns="${NS_MAIN}" xmlns:r="${NS_R}">` +
     `<sheets>${sheets}</sheets>` +
-    (definedNames ? `<definedNames>${definedNames}</definedNames>` : '') +
+    (allNames ? `<definedNames>${allNames}</definedNames>` : '') +
     `<calcPr calcId="0" fullCalcOnLoad="1"/>` +
     `</workbook>`
   )
@@ -148,21 +179,24 @@ export interface WorksheetSections {
   autoFilter?: string
   /** Full `<mergeCells>…</mergeCells>`, or omitted. */
   mergeCells?: string
+  /** Full `<hyperlinks>…</hyperlinks>`, or omitted. */
+  hyperlinks?: string
 }
 
 /**
  * Assembles a worksheet part. Child order follows the CT_Worksheet schema:
- * `dimension → sheetViews → cols → sheetData → autoFilter → mergeCells`.
+ * `dimension → sheetViews → cols → sheetData → autoFilter → mergeCells → hyperlinks`.
  */
 export function worksheetXml(s: WorksheetSections): string {
   return (
-    `${XML_DECLARATION}\n<worksheet xmlns="${NS_MAIN}">` +
+    `${XML_DECLARATION}\n<worksheet xmlns="${NS_MAIN}" xmlns:r="${NS_R}">` +
     `<dimension ref="${s.dimension}"/>` +
     (s.sheetViews ?? '') +
     (s.cols ?? '') +
     `<sheetData>${s.rows}</sheetData>` +
     (s.autoFilter ?? '') +
     (s.mergeCells ?? '') +
+    (s.hyperlinks ?? '') +
     `</worksheet>`
   )
 }

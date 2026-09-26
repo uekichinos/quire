@@ -276,3 +276,166 @@ describe('readWorkbook — malformed / hostile input', () => {
     expect(({} as Record<string, unknown>).polluted).toBeUndefined()
   })
 })
+
+describe('readWorkbook — hyperlinks', () => {
+  it('round-trips a hyperlink written by the writer, tooltip included', () => {
+    const wb = roundTrip((w) => {
+      w.addWorksheet('S').addRow([
+        { hyperlink: 'https://example.com', text: 'Example', tooltip: 'hi' },
+      ])
+    })
+    expect(wb.sheet('S')!.cell('A1')).toMatchObject({
+      value: 'Example',
+      hyperlink: { target: 'https://example.com', tooltip: 'hi' },
+    })
+  })
+
+  it('resolves an internal link via the location attribute (no relationship)', () => {
+    const bytes = makeXlsx({
+      '[Content_Types].xml': CT,
+      '_rels/.rels': RELS,
+      'xl/workbook.xml': `<?xml version="1.0"?><workbook xmlns:r="x"><sheets><sheet name="S" sheetId="1" r:id="rId1"/></sheets></workbook>`,
+      'xl/_rels/workbook.xml.rels': `<?xml version="1.0"?><Relationships xmlns="x"><Relationship Id="rId1" Type="x" Target="worksheets/sheet1.xml"/></Relationships>`,
+      'xl/worksheets/sheet1.xml': `<?xml version="1.0"?><worksheet><sheetData><row r="1"><c r="A1" t="s"><v>0</v></c></row></sheetData><hyperlinks><hyperlink ref="A1" location="Sheet2!A1" display="Sheet2!A1"/></hyperlinks></worksheet>`,
+      'xl/sharedStrings.xml': `<?xml version="1.0"?><sst><si><t>jump</t></si></sst>`,
+    })
+    const cell = readWorkbook(bytes).sheet('S')!.cell('A1')!
+    expect(cell.hyperlink).toEqual({ target: 'Sheet2!A1', tooltip: undefined })
+  })
+
+  it('ignores a dangling relationship id without throwing', () => {
+    const bytes = makeXlsx({
+      '[Content_Types].xml': CT,
+      '_rels/.rels': RELS,
+      'xl/workbook.xml': `<?xml version="1.0"?><workbook xmlns:r="x"><sheets><sheet name="S" sheetId="1" r:id="rId1"/></sheets></workbook>`,
+      'xl/_rels/workbook.xml.rels': `<?xml version="1.0"?><Relationships xmlns="x"><Relationship Id="rId1" Type="x" Target="worksheets/sheet1.xml"/></Relationships>`,
+      'xl/worksheets/sheet1.xml': `<?xml version="1.0"?><worksheet><sheetData><row r="1"><c r="A1" t="s"><v>0</v></c></row></sheetData><hyperlinks><hyperlink ref="A1" r:id="rIdMissing"/></hyperlinks></worksheet>`,
+      'xl/sharedStrings.xml': `<?xml version="1.0"?><sst><si><t>x</t></si></sst>`,
+    })
+    const cell = readWorkbook(bytes).sheet('S')!.cell('A1')!
+    expect(cell.hyperlink).toBeUndefined()
+  })
+
+  it('attaches a range hyperlink to its top-left cell only', () => {
+    const bytes = makeXlsx({
+      '[Content_Types].xml': CT,
+      '_rels/.rels': RELS,
+      'xl/workbook.xml': `<?xml version="1.0"?><workbook xmlns:r="x"><sheets><sheet name="S" sheetId="1" r:id="rId1"/></sheets></workbook>`,
+      'xl/_rels/workbook.xml.rels': `<?xml version="1.0"?><Relationships xmlns="x"><Relationship Id="rId1" Type="x" Target="worksheets/sheet1.xml"/></Relationships>`,
+      'xl/worksheets/sheet1.xml': `<?xml version="1.0"?><worksheet><sheetData><row r="1"><c r="A1" t="s"><v>0</v></c><c r="B1" t="s"><v>1</v></c></row></sheetData><hyperlinks><hyperlink ref="A1:B1" r:id="rId1"/></hyperlinks></worksheet>`,
+      'xl/worksheets/_rels/sheet1.xml.rels': `<?xml version="1.0"?><Relationships xmlns="x"><Relationship Id="rId1" Type="x" Target="https://example.com" TargetMode="External"/></Relationships>`,
+      'xl/sharedStrings.xml': `<?xml version="1.0"?><sst><si><t>a</t></si><si><t>b</t></si></sst>`,
+    })
+    const sheet = readWorkbook(bytes).sheet('S')!
+    expect(sheet.cell('A1')!.hyperlink).toEqual({ target: 'https://example.com', tooltip: undefined })
+    expect(sheet.cell('B1')!.hyperlink).toBeUndefined()
+  })
+})
+
+describe('readWorkbook — defined names', () => {
+  it('excludes the internal _xlnm._FilterDatabase name', () => {
+    const wb = roundTrip((w) => {
+      const s = w.addWorksheet('S')
+      s.addRow(['h']).autoFilter('A1:A1')
+    })
+    expect(wb.definedNames).toEqual([])
+  })
+
+  it('resolves a quoted sheet name with an escaped apostrophe', () => {
+    const bytes = makeXlsx({
+      '[Content_Types].xml': CT,
+      '_rels/.rels': RELS,
+      'xl/workbook.xml': `<?xml version="1.0"?><workbook xmlns:r="x"><sheets><sheet name="Bob's Sheet" sheetId="1" r:id="rId1"/></sheets><definedNames><definedName name="Foo">'Bob''s Sheet'!$A$1</definedName></definedNames></workbook>`,
+      'xl/_rels/workbook.xml.rels': `<?xml version="1.0"?><Relationships xmlns="x"><Relationship Id="rId1" Type="x" Target="worksheets/sheet1.xml"/></Relationships>`,
+      'xl/worksheets/sheet1.xml': `<?xml version="1.0"?><worksheet><sheetData/></worksheet>`,
+    })
+    expect(readWorkbook(bytes).definedNames).toEqual([
+      { name: 'Foo', sheetName: "Bob's Sheet", range: 'A1', refersTo: "'Bob''s Sheet'!$A$1", hidden: undefined },
+    ])
+  })
+
+  it('keeps an unresolvable reference with sheetName/range undefined', () => {
+    const bytes = makeXlsx({
+      '[Content_Types].xml': CT,
+      '_rels/.rels': RELS,
+      'xl/workbook.xml': `<?xml version="1.0"?><workbook xmlns:r="x"><sheets><sheet name="S" sheetId="1" r:id="rId1"/></sheets><definedNames><definedName name="Pi">3.14159</definedName><definedName name="Multi">Sheet1!$A$1,Sheet2!$B$2</definedName></definedNames></workbook>`,
+      'xl/_rels/workbook.xml.rels': `<?xml version="1.0"?><Relationships xmlns="x"><Relationship Id="rId1" Type="x" Target="worksheets/sheet1.xml"/></Relationships>`,
+      'xl/worksheets/sheet1.xml': `<?xml version="1.0"?><worksheet><sheetData/></worksheet>`,
+    })
+    const names = readWorkbook(bytes).definedNames
+    expect(names).toEqual([
+      { name: 'Pi', sheetName: undefined, range: undefined, refersTo: '3.14159', hidden: undefined },
+      { name: 'Multi', sheetName: undefined, range: undefined, refersTo: 'Sheet1!$A$1,Sheet2!$B$2', hidden: undefined },
+    ])
+  })
+})
+
+describe('readWorkbook — column/row default styles', () => {
+  const stylesXml = `<?xml version="1.0"?><styleSheet xmlns="x"><fonts count="1"><font/></fonts><fills count="3"><fill/><fill/><fill><patternFill patternType="solid"><fgColor rgb="FFFF0000"/></patternFill></fill></fills><borders count="1"><border/></borders><cellXfs count="3"><xf/><xf fontId="0"/><xf fillId="2" applyFill="1"/></cellXfs></styleSheet>`
+
+  it('resolves <col style> and <row customFormat s> only under { styles: true }', () => {
+    const bytes = makeXlsx({
+      '[Content_Types].xml': CT,
+      '_rels/.rels': RELS,
+      'xl/workbook.xml': `<?xml version="1.0"?><workbook xmlns:r="x"><sheets><sheet name="S" sheetId="1" r:id="rId1"/></sheets></workbook>`,
+      'xl/_rels/workbook.xml.rels': `<?xml version="1.0"?><Relationships xmlns="x"><Relationship Id="rId1" Type="x" Target="worksheets/sheet1.xml"/></Relationships>`,
+      'xl/styles.xml': stylesXml,
+      'xl/worksheets/sheet1.xml': `<?xml version="1.0"?><worksheet><cols><col min="2" max="4" style="2"/></cols><sheetData><row r="5" s="2" customFormat="1"/><row r="6"><c r="A6"><v>1</v></c></row></sheetData></worksheet>`,
+    })
+    const sheet = readWorkbook(bytes, { styles: true }).sheet('S')!
+    expect(sheet.columnStyles.get(2)).toEqual({ fill: 'FFFF0000' })
+    expect(sheet.columnStyles.get(3)).toEqual({ fill: 'FFFF0000' })
+    expect(sheet.columnStyles.get(4)).toEqual({ fill: 'FFFF0000' })
+    expect(sheet.columnStyles.get(5)).toBeUndefined()
+    expect(sheet.columnStyles.get(1)).toBeUndefined()
+    expect(sheet.rowStyles.get(5)).toEqual({ fill: 'FFFF0000' })
+    expect(sheet.rowStyles.get(6)).toBeUndefined()
+
+    const withoutStyles = readWorkbook(bytes).sheet('S')!
+    expect(withoutStyles.columnStyles.size).toBe(0)
+    expect(withoutStyles.rowStyles.size).toBe(0)
+  })
+
+  it('ignores a row s="N" without customFormat="1" (not a real row default)', () => {
+    const bytes = makeXlsx({
+      '[Content_Types].xml': CT,
+      '_rels/.rels': RELS,
+      'xl/workbook.xml': `<?xml version="1.0"?><workbook xmlns:r="x"><sheets><sheet name="S" sheetId="1" r:id="rId1"/></sheets></workbook>`,
+      'xl/_rels/workbook.xml.rels': `<?xml version="1.0"?><Relationships xmlns="x"><Relationship Id="rId1" Type="x" Target="worksheets/sheet1.xml"/></Relationships>`,
+      'xl/styles.xml': stylesXml,
+      'xl/worksheets/sheet1.xml': `<?xml version="1.0"?><worksheet><sheetData><row r="1" s="2"><c r="A1"><v>1</v></c></row></sheetData></worksheet>`,
+    })
+    const sheet = readWorkbook(bytes, { styles: true }).sheet('S')!
+    expect(sheet.rowStyles.size).toBe(0)
+  })
+})
+
+describe('readWorkbook — formula cells with a date format', () => {
+  it('converts a formula result to a Date when its style is a date format', () => {
+    const bytes = makeXlsx({
+      '[Content_Types].xml': CT,
+      '_rels/.rels': RELS,
+      'xl/workbook.xml': `<?xml version="1.0"?><workbook xmlns:r="x"><sheets><sheet name="S" sheetId="1" r:id="rId1"/></sheets></workbook>`,
+      'xl/_rels/workbook.xml.rels': `<?xml version="1.0"?><Relationships xmlns="x"><Relationship Id="rId1" Type="x" Target="worksheets/sheet1.xml"/></Relationships>`,
+      'xl/styles.xml': `<?xml version="1.0"?><styleSheet xmlns="x"><fonts count="1"><font/></fonts><fills count="1"><fill/></fills><borders count="1"><border/></borders><cellXfs count="2"><xf numFmtId="0"/><xf numFmtId="14" applyNumberFormat="1"/></cellXfs></styleSheet>`,
+      'xl/worksheets/sheet1.xml': `<?xml version="1.0"?><worksheet><sheetData><row r="1"><c r="A1" s="1"><f>TODAY()</f><v>45900</v></c></row></sheetData></worksheet>`,
+    })
+    const cell = readWorkbook(bytes).sheet('S')!.cell('A1')!
+    expect(cell.type).toBe('formula')
+    expect(cell.value).toBeInstanceOf(Date)
+    expect((cell.value as Date).getFullYear()).toBe(2025)
+    expect(cell.formula).toBe('TODAY()')
+  })
+
+  it('leaves a plain-numeric-format formula result as a number', () => {
+    const bytes = makeXlsx({
+      '[Content_Types].xml': CT,
+      '_rels/.rels': RELS,
+      'xl/workbook.xml': `<?xml version="1.0"?><workbook xmlns:r="x"><sheets><sheet name="S" sheetId="1" r:id="rId1"/></sheets></workbook>`,
+      'xl/_rels/workbook.xml.rels': `<?xml version="1.0"?><Relationships xmlns="x"><Relationship Id="rId1" Type="x" Target="worksheets/sheet1.xml"/></Relationships>`,
+      'xl/worksheets/sheet1.xml': `<?xml version="1.0"?><worksheet><sheetData><row r="1"><c r="A1"><f>SUM(1,2)</f><v>3</v></c></row></sheetData></worksheet>`,
+    })
+    const cell = readWorkbook(bytes).sheet('S')!.cell('A1')!
+    expect(cell.value).toBe(3)
+  })
+})
