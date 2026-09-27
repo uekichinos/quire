@@ -2,21 +2,54 @@
 
 [![Socket Badge](https://badge.socket.dev/npm/package/@uekichinos/quire/0.6.0)](https://socket.dev/npm/package/@uekichinos/quire/overview/0.6.0)
 
-A small, dependency-light `.xlsx` **reader + writer** for Node and the browser.
+A small, dependency-light `.xlsx` **reader + writer** for Node and the browser
+— a security-conscious alternative to ExcelJS (see [Scope](#scope)).
 
 - **One runtime dependency** — [`fflate`](https://github.com/101arrowz/fflate) for zip packaging
-- **Write:** worksheets · typed cells (string / number / boolean / `Date` / formula /
-  hyperlink / rich text) · a de-duplicated style pool · merged cells · column widths ·
-  freeze panes · auto-filter · row heights · data validation · conditional formatting
-  (highlight rules, colour scales, data bars) · comments · print setup (orientation,
-  fit-to-page, margins, print area). Deterministic `Uint8Array` / `Blob` output, plus a
-  low-memory [streaming writer](#streaming-writer) for very large sheets
-- **Read:** values, dates, formulas (+ cached result), merges, hyperlinks, comments,
-  rich text, data validation, conditional formatting, print setup — via an in-house
-  strict XML tokenizer, not a dependency, so the DOCTYPE / entity-expansion class
-  behind most XML-parser CVEs doesn't apply. A [`readRows`](#streaming-reader) mode
-  streams a sheet row-by-row for lower peak memory on large files
-- Identical in Node and the browser
+- **Identical API in Node and the browser**
+- **Write:** typed cells, styles, merges, freeze panes, data validation,
+  conditional formatting, comments, print setup, protection, and more — see
+  [Writing](#writing)
+- **Read:** values, dates, formulas, styles, and everything the writer
+  produces, via a strict in-house XML tokenizer instead of a dependency — see
+  [Reading](#reading)
+
+## Contents
+
+- [Install](#install)
+- [Quick start](#quick-start)
+- [Writing](#writing)
+  - [Workbook and worksheet](#workbook-and-worksheet)
+  - [Cell values](#cell-values)
+  - [Hyperlinks](#hyperlinks)
+  - [Defined names](#defined-names)
+  - [Outline (grouping)](#outline-grouping)
+  - [Row/column default styles](#rowcolumn-default-styles)
+  - [Rich text](#rich-text)
+  - [Data validation](#data-validation)
+  - [Conditional formatting](#conditional-formatting)
+  - [Comments](#comments)
+  - [Print setup](#print-setup)
+  - [Protection](#protection)
+  - [Cell styles](#cell-styles)
+  - [Streaming writer](#streaming-writer)
+- [Reading](#reading)
+  - [Quick example](#quick-example)
+  - [Cell types](#cell-types)
+  - [Limits](#limits)
+  - [Styles on read](#styles-on-read)
+  - [Defined names on read](#defined-names-on-read)
+  - [Data validation on read](#data-validation-on-read)
+  - [Outline on read](#outline-on-read)
+  - [Conditional formatting on read](#conditional-formatting-on-read)
+  - [Print setup on read](#print-setup-on-read)
+  - [Protection on read](#protection-on-read)
+  - [Security model](#security-model)
+  - [Not read](#not-read)
+  - [Streaming reader](#streaming-reader)
+- [Scope](#scope)
+- [Performance](#performance)
+- [License](#license)
 
 ## Install
 
@@ -24,22 +57,20 @@ A small, dependency-light `.xlsx` **reader + writer** for Node and the browser.
 npm install @uekichinos/quire
 ```
 
-## Usage
+## Quick start
 
 ```js
-import { createWorkbook } from '@uekichinos/quire'
+import { createWorkbook, readWorkbook } from '@uekichinos/quire'
 
 const wb = createWorkbook()
 const sheet = wb.addWorksheet('Sales')
 
 const header = { font: { bold: true, color: 'FFFFFF' }, fill: '2F5597' }
-sheet.addRow(
-  [
-    { value: 'Product', style: header },
-    { value: 'Revenue', style: header },
-    { value: 'Updated', style: header },
-  ],
-)
+sheet.addRow([
+  { value: 'Product', style: header },
+  { value: 'Revenue', style: header },
+  { value: 'Updated', style: header },
+])
 
 sheet.addRow(['Widget', { value: 15003.4, style: { numFmt: '#,##0.00' } }, new Date(2024, 2, 1)])
 sheet.addRow(['Gadget', { value: 2450, style: { numFmt: '#,##0.00' } }, new Date(2024, 2, 3)])
@@ -54,11 +85,6 @@ sheet.merge('A1:C1')
 sheet.setColumn(1, { width: 24 })
 sheet.freeze({ ySplit: 1 })
 sheet.autoFilter('A1:C1')
-sheet.addRow(['tall row'], { height: 30 })
-sheet.setCell('E1', 'note', { align: { wrapText: true } })
-
-// …or up front
-wb.addWorksheet('Q2', { columns: [{ width: 20 }], freeze: { ySplit: 1 }, autoFilter: 'A1:C1' })
 
 const bytes = wb.xlsx() // Uint8Array
 
@@ -68,11 +94,20 @@ writeFileSync('sales.xlsx', bytes)
 
 // Browser
 const url = URL.createObjectURL(wb.blob())
+
+// …and reading it back
+const back = readWorkbook(bytes)
+back.sheet('Sales').values() // [['Product', 'Revenue', 'Updated'], ['Widget', 15003.4, …], …]
 ```
 
-## API
+The full write API is in [Writing](#writing); the full read API is in
+[Reading](#reading).
 
-### `createWorkbook(): Workbook`
+## Writing
+
+### Workbook and worksheet
+
+`createWorkbook(): Workbook`
 
 | `Workbook` | |
 |---|---|
@@ -97,54 +132,65 @@ const url = URL.createObjectURL(wb.blob())
 | `setPageSetup(options)` | orientation, paper size, fit-to-page/scale, margins, print area |
 | `protect(options?)` | structural sheet protection (no password) — see [Protection](#protection) |
 
-**Cell values:** `string · number · boolean · Date · { formula, result? } ·
+### Cell values
+
+`string · number · boolean · Date · { formula, result? } ·
 { hyperlink, text?, tooltip? } · RichTextRun[] · null`. Dates use the 1900
 serial system (default format `yyyy-mm-dd`). `null` / `undefined` cells are
 skipped but keep column position. Non-finite numbers and pre-1900 dates throw.
 
-**Hyperlinks:** `{ hyperlink: 'https://…', text?, tooltip? }` as a cell value —
-`text` (defaults to the URL itself) becomes the cell's string, `hyperlink` any
-URI (`http(s)://`, `mailto:`, …) up to 2,079 characters. Re-setting the cell to
-a non-hyperlink value drops it. `sheet.setCell('A1', { hyperlink, text }, style)`
+### Hyperlinks
+
+`{ hyperlink: 'https://…', text?, tooltip? }` as a cell value — `text`
+(defaults to the URL itself) becomes the cell's string, `hyperlink` any URI
+(`http(s)://`, `mailto:`, …) up to 2,079 characters. Re-setting the cell to a
+non-hyperlink value drops it. `sheet.setCell('A1', { hyperlink, text }, style)`
 combines it with a style.
 
-**Defined names:** `wb.defineName(name, sheetName, range, options?)` —
-`sheetName` must already be added, `range` a single cell (`'A1'`) or a range
-(`'A1:C3'`). Names follow Excel's identifier rules (start with a letter/`_`/
-`\`, then letters, digits, `_` or `.`; can't read as a cell reference; can't
-use the reserved `_xlnm.` prefix) and must be unique (case-insensitively).
-Workbook-scoped (visible everywhere) by default; pass `{ scope: 'SheetName' }`
-(which must also already exist) to limit visibility to that one sheet — Excel
-then requires the sheet-qualified form (`SheetName!SalesRange`) from any other
-sheet.
+### Defined names
 
-**Outline (grouping):** `addRow(values, { hidden?, outlineLevel? })` /
-`setRow(i, { hidden?, outlineLevel? })` / `setColumn(i, { hidden?,
-outlineLevel? })` — `outlineLevel` is `0`–`7`, matching Excel's own grouping
-depth. `addWorksheet(name, { outline: { summaryBelow?, summaryRight? } })`
-controls which side the summary row/column sits on (both default `true`,
-Excel's own default).
+`wb.defineName(name, sheetName, range, options?)` — `sheetName` must already
+be added, `range` a single cell (`'A1'`) or a range (`'A1:C3'`). Names follow
+Excel's identifier rules (start with a letter/`_`/`\`, then letters, digits,
+`_` or `.`; can't read as a cell reference; can't use the reserved `_xlnm.`
+prefix) and must be unique (case-insensitively). Workbook-scoped (visible
+everywhere) by default; pass `{ scope: 'SheetName' }` (which must also already
+exist) to limit visibility to that one sheet — Excel then requires the
+sheet-qualified form (`SheetName!SalesRange`) from any other sheet.
 
-**Row/column default styles:** `sheet.setRow(i, { style })` / `setColumn(i, {
-style })` now also mark the row/column itself with that default style (not
-just each populated cell), so empty cells in a styled row or column show the
-right formatting in Excel too.
+### Outline (grouping)
 
-**Rich text:** a cell value can be `RichTextRun[]` — `[{ text, font? }, …]` —
-for multiple differently-formatted spans in one string, e.g. a bold word
-mid-sentence. `font` is a subset of `CellStyle.font` (`name`, `size`, `bold`,
-`italic`, `underline`, `color`) applied per run; the cell's own style (fill,
-border, align, numFmt) still applies normally. Must have at least one run.
+`addRow(values, { hidden?, outlineLevel? })` / `setRow(i, { hidden?,
+outlineLevel? })` / `setColumn(i, { hidden?, outlineLevel? })` —
+`outlineLevel` is `0`–`7`, matching Excel's own grouping depth.
+`addWorksheet(name, { outline: { summaryBelow?, summaryRight? } })` controls
+which side the summary row/column sits on (both default `true`, Excel's own
+default).
 
-**Data validation:** `sheet.setDataValidation(range, rule, options?)` restricts
-a range to one rule:
+### Row/column default styles
+
+`sheet.setRow(i, { style })` / `setColumn(i, { style })` also mark the
+row/column itself with that default style (not just each populated cell), so
+empty cells in a styled row or column show the right formatting in Excel too.
+
+### Rich text
+
+A cell value can be `RichTextRun[]` — `[{ text, font? }, …]` — for multiple
+differently-formatted spans in one string, e.g. a bold word mid-sentence.
+`font` is a subset of `CellStyle.font` (`name`, `size`, `bold`, `italic`,
+`underline`, `color`) applied per run; the cell's own style (fill, border,
+align, numFmt) still applies normally. Must have at least one run.
+
+### Data validation
+
+`sheet.setDataValidation(range, rule, options?)` restricts a range to one rule:
 
 ```js
 // dropdown from fixed choices, or a range reference
 sheet.setDataValidation('C2:C100', { type: 'list', list: ['Open', 'In Progress', 'Done'] })
 sheet.setDataValidation('D2:D100', { type: 'list', list: 'Lookup!$A$1:$A$5' })
 
-// numeric / date / text-length rules — `value` takes a pair for between/notBetween
+// numeric / date / time / text-length rules — `value` takes a pair for between/notBetween
 sheet.setDataValidation('E2:E100', { type: 'whole', operator: 'between', value: [0, 100] })
 sheet.setDataValidation('F2:F100', { type: 'date', operator: 'greaterThan', value: new Date(2024, 0, 1) })
 sheet.setDataValidation('G2:G100', { type: 'textLength', operator: 'lessThanOrEqual', value: 50 })
@@ -163,8 +209,9 @@ must fit Excel's 255-character limit. For `whole`/`decimal`/`date`/`time`/
 `textLength`, `operator` is one of `between · notBetween · equal · notEqual ·
 greaterThan · lessThan · greaterThanOrEqual · lessThanOrEqual`.
 
-**Conditional formatting:** `sheet.addConditionalFormat(range, rule)` — three
-rule kinds:
+### Conditional formatting
+
+`sheet.addConditionalFormat(range, rule)`:
 
 ```js
 // highlight cells matching a condition
@@ -193,12 +240,16 @@ sheet.addConditionalFormat('F2:F100', {
 differential-format record, shared by `top10`); `operator` takes the same set
 as data validation, with `formula` as a pair for `between`/`notBetween`.
 
-**Comments:** `sheet.setComment(ref, text, { author? })` attaches a note to a
-cell, independent of whatever value (or no value) is there. Uses the classic
+### Comments
+
+`sheet.setComment(ref, text, { author? })` attaches a note to a cell,
+independent of whatever value (or no value) is there. Uses the classic
 comment format (`xl/commentsN.xml` + a VML drawing for the indicator/popup),
 not modern threaded comments.
 
-**Print setup:** `sheet.setPageSetup(options)`:
+### Print setup
+
+`sheet.setPageSetup(options)`:
 
 ```js
 sheet.setPageSetup({
@@ -211,8 +262,9 @@ sheet.setPageSetup({
 })
 ```
 `printArea` is written as the sheet's own `_xlnm.Print_Area` workbook-level
-defined name. In the **streaming writer**, `setPageSetup` must be called
-before that sheet's first `addRow()`, same as `setColumn`/`freeze`.
+defined name. In the [streaming writer](#streaming-writer), `setPageSetup`
+must be called before that sheet's first `addRow()`, same as
+`setColumn`/`freeze`.
 
 ### Protection
 
@@ -243,19 +295,54 @@ given flag defaults:
 | `allowInsertColumns` / `allowInsertRows` / `allowDeleteColumns` / `allowDeleteRows` | `false` | structure edits |
 | `allowSort` / `allowAutoFilter` | `false` | sorting / the autofilter dropdowns |
 
-`WorkbookProtectionOptions` is `{ lockStructure? (default `true`), lockWindows?
-(default `false`) }` — locking the sheet list (add/remove/rename/reorder/hide)
+`WorkbookProtectionOptions` is `{ lockStructure? (default true), lockWindows?
+(default false) }` — locking the sheet list (add/remove/rename/reorder/hide)
 and/or the workbook window.
 
-**`CellStyle`:** `font` (`name`, `size`, `bold`, `italic`, `underline`, `color`)
-· `fill` (`'RRGGBB'` / `'AARRGGBB'`) · `align` (`horizontal`, `vertical`,
+### Cell styles
+
+`CellStyle`: `font` (`name`, `size`, `bold`, `italic`, `underline`, `color`) ·
+`fill` (`'RRGGBB'` / `'AARRGGBB'`) · `align` (`horizontal`, `vertical`,
 `wrapText`, `indent`) · `border` (`top`/`right`/`bottom`/`left`/`all` →
 `{ style, color? }`) · `numFmt` (format code or built-in id) · `protection`
 (`{ locked?, hidden? }` — see [Protection](#protection)). Every distinct
-style is interned once. Cell style merges over row style over column style, one
-nested level deep.
+style is interned once. Cell style merges over row style over column style,
+one nested level deep.
 
-## Reading (`0.2.0`)
+### Streaming writer
+
+`createWorkbook()`'s `xlsx()` holds every cell in memory until you call it —
+fine up to a few hundred thousand rows, wasteful well beyond that.
+`createStreamingWorkbook()` renders and DEFLATEs each row as it's added
+instead, so memory stays flat regardless of row count:
+
+```js
+import { createStreamingWorkbook } from '@uekichinos/quire'
+
+const wb = createStreamingWorkbook()
+const sheet = wb.addWorksheet('Big', { columns: [{ width: 20 }], freeze: { ySplit: 1 } })
+
+sheet.addRow(['ID', 'Name', 'Created'])
+for (let i = 1; i <= 2_000_000; i++) {
+  sheet.addRow([i, `Row ${i}`, new Date(2024, 0, 1)])
+}
+
+const bytes = await wb.finish() // Uint8Array — same as xlsx(), just async
+```
+
+Everything from the buffered writer works — hyperlinks, rich text, merges,
+freeze panes, auto-filter, data validation, conditional formatting, comments,
+print setup, outline (grouping), protection, `defineName` — with one
+constraint: it's **one pass, forward-only**. There's no `setCell`/`setRow`
+random access, and `setColumn`/`freeze`/`setPageSetup` must be called before
+that sheet's first `addRow()` (they render into the header, which is flushed
+immediately). `merge`/`autoFilter`/`setDataValidation`/`addConditionalFormat`/
+`setComment`/`protect()` (sheet and workbook) can be called any time before
+`finish()`. Multiple sheets can be written interleaved or in any order.
+
+## Reading
+
+### Quick example
 
 ```js
 import { readWorkbook } from '@uekichinos/quire'
@@ -276,6 +363,13 @@ for (const row of s.rows()) {            // sparse: row[col-1]
 }
 ```
 
+`readWorkbookAsync(bytes, options?)` returns the same `ReadWorkbook` but
+yields to the event loop between sheets, so a large import doesn't block.
+`s.values({ ragged: true })` keeps each row's own length instead of padding to
+the sheet width. `{ sheets: [name|index] }` loads a subset.
+
+### Cell types
+
 `ReadCell.type` is `'string' | 'number' | 'boolean' | 'date' | 'formula' |
 'error' | 'empty'`. Numbers with a date format become `Date` (opt out with
 `readWorkbook(bytes, { dates: false })`) — formula cells get the same
@@ -286,83 +380,97 @@ code) when it has one, `.hyperlink` (`{ target, tooltip? }`) when it carries
 one — external targets resolved via the worksheet's own relationships,
 in-workbook links via `location` — and `.comment` (`{ text, author }`) when it
 has a note, whether or not the cell itself has a value. Formula cells carry
-both `.formula` (no leading `=`) and `.value` (the cached result). `{ sheets:
-[name|index] }` loads a subset.
+both `.formula` (no leading `=`) and `.value` (the cached result).
 
-`readWorkbookAsync(bytes, options?)` returns the same `ReadWorkbook` but yields
-to the event loop between sheets, so a large import doesn't block. `s.values({
-ragged: true })` keeps each row's own length instead of padding to the sheet
-width.
+### Limits
 
-**Limits.** `readWorkbook(bytes, { limits })` caps `maxTotalBytes` (100 MB),
-`maxPartBytes` (50 MB), `maxCells` (5 000 000) and `maxSheets` (256); the
-archive is inflated part-by-part and aborted mid-stream when a cap trips. Over
-the limit throws `QuireError`.
+`readWorkbook(bytes, { limits })` caps `maxTotalBytes` (100 MB), `maxPartBytes`
+(50 MB), `maxCells` (5 000 000) and `maxSheets` (256); the archive is inflated
+part-by-part and aborted mid-stream when a cap trips. Over the limit throws
+`QuireError`.
 
-**Styles on read** — `readWorkbook(bytes, { styles: true })` resolves a
-`ReadStyle` onto each cell (`font`, `fill`, `border`, `align`, `numFmt`), mirror
-of the writer's `CellStyle`. `rgb` colours resolve exactly; indexed colours use
-the standard palette; theme colours are read from `xl/theme` (with the 0/1 swap
-and an approximate tint). Off by default — most imports only need values.
-Under the same option, `sheet.columnStyles` / `sheet.rowStyles` (`Map<number,
+### Styles on read
+
+`readWorkbook(bytes, { styles: true })` resolves a `ReadStyle` onto each cell
+(`font`, `fill`, `border`, `align`, `numFmt`), mirroring the writer's
+`CellStyle`. `rgb` colours resolve exactly; indexed colours use the standard
+palette; theme colours are read from `xl/theme` (with the 0/1 swap and an
+approximate tint). Off by default — most imports only need values. Under the
+same option, `sheet.columnStyles` / `sheet.rowStyles` (`Map<number,
 ReadStyle>`, 1-based) expose column/row **default** styles — what an empty
 cell (no `<c>` element at all) in that column/row would look like.
 
-**Defined names** — `wb.definedNames` lists user-defined named ranges
-(`_xlnm._FilterDatabase` and other Excel-internal names are excluded). Each
-entry resolves `sheetName`/`range` when the reference is a simple single-sheet
-range; anything else (a formula, a multi-area reference, a named constant)
-keeps `refersTo` with `sheetName`/`range` left `undefined`. `scope` resolves to
-the scoping sheet's name for a sheet-scoped name, `undefined` for a
+### Defined names on read
+
+`wb.definedNames` lists user-defined named ranges (`_xlnm._FilterDatabase`
+and other Excel-internal names are excluded). Each entry resolves
+`sheetName`/`range` when the reference is a simple single-sheet range;
+anything else (a formula, a multi-area reference, a named constant) keeps
+`refersTo` with `sheetName`/`range` left `undefined`. `scope` resolves to the
+scoping sheet's name for a sheet-scoped name, `undefined` for a
 workbook-scoped one.
 
-**Data validation** — `sheet.dataValidations` lists `list` / `whole` /
-`decimal` / `date` / `time` / `textLength` / `custom` rules (every
-`ST_DataValidationType` except `none`, which is skipped). A `list` rule
-resolves `list` (inline choices) or `formula` (range reference); `custom`
-resolves `formula`; `time` resolves `operator` and `values` as `'HH:MM:SS'`
-strings; the rest resolve `operator` and `values` (numbers, or `Date`s for
-`type: 'date'` — one entry, or two for `between`/`notBetween`).
+### Data validation on read
 
-**Outline (grouping)** — `sheet.columnInfo` / `sheet.rowInfo` (`Map<number,
-{ width?/height?, hidden?, outlineLevel? }>`, 1-based) resolve `<col>`/`<row>`
-layout facts, whether or not the column/row also carries a default style.
+`sheet.dataValidations` lists `list` / `whole` / `decimal` / `date` / `time` /
+`textLength` / `custom` rules (every `ST_DataValidationType` except `none`,
+which is skipped). A `list` rule resolves `list` (inline choices) or `formula`
+(range reference); `custom` resolves `formula`; `time` resolves `operator` and
+`values` as `'HH:MM:SS'` strings; the rest resolve `operator` and `values`
+(numbers, or `Date`s for `type: 'date'` — one entry, or two for
+`between`/`notBetween`).
 
-**Conditional formatting** — `sheet.conditionalFormats` lists `cellIs`,
-`colorScale`, `dataBar`, `iconSet` and `top10` rules as `{ ref, rule }`.
-`cellIs`/`top10` resolve `style` (a `ReadStyle` with only
-`font.bold`/`italic`/`color` and `fill` populated — the differential-format's
-own limited scope) under `{ styles: true }`; `cellIs` also resolves `operator`
-and `formula` (one or two, as written); `top10` also resolves `rank`/
-`percent`/`bottom`. `colorScale` resolves `colors`; `dataBar` resolves
-`color`; `iconSet` resolves `iconSet` (the standard Excel name).
+### Outline on read
 
-**Print setup** — `sheet.pageSetup` resolves `orientation`, `paperSize`,
-`fitToWidth`/`fitToHeight`, `scale`, `margins`, and `printArea` (from the
-sheet's own `_xlnm.Print_Area` defined name) — `undefined` when the sheet has
-neither a `<pageSetup>`/`<pageMargins>` block nor a print area.
+`sheet.columnInfo` / `sheet.rowInfo` (`Map<number, { width?/height?, hidden?,
+outlineLevel? }>`, 1-based) resolve `<col>`/`<row>` layout facts, whether or
+not the column/row also carries a default style.
 
-**Protection** — `sheet.protection` / `wb.protection` resolve the same
-positive ("allow"/`lockStructure`/`lockWindows`) shape the writer's
+### Conditional formatting on read
+
+`sheet.conditionalFormats` lists `cellIs`, `colorScale`, `dataBar`, `iconSet`
+and `top10` rules as `{ ref, rule }`. `cellIs`/`top10` resolve `style` (a
+`ReadStyle` with only `font.bold`/`italic`/`color` and `fill` populated — the
+differential-format's own limited scope) under `{ styles: true }`; `cellIs`
+also resolves `operator` and `formula` (one or two, as written); `top10` also
+resolves `rank`/`percent`/`bottom`. `colorScale` resolves `colors`; `dataBar`
+resolves `color`; `iconSet` resolves `iconSet` (the standard Excel name).
+
+### Print setup on read
+
+`sheet.pageSetup` resolves `orientation`, `paperSize`, `fitToWidth`/
+`fitToHeight`, `scale`, `margins`, and `printArea` (from the sheet's own
+`_xlnm.Print_Area` defined name) — `undefined` when the sheet has neither a
+`<pageSetup>`/`<pageMargins>` block nor a print area.
+
+### Protection on read
+
+`sheet.protection` / `wb.protection` resolve the same positive
+("allow"/`lockStructure`/`lockWindows`) shape the writer's
 `sheet.protect()`/`wb.protect()` take, `undefined` when not protected. A
 cell's `ReadStyle.protection` (`{ locked?, hidden? }`) resolves under
 `{ styles: true }`.
 
-**Deliberately strict and small.** The XML is parsed by a ~200-line in-house
-tokenizer (not a dependency) that rejects `<!DOCTYPE>`, `<!ENTITY>`, `<![CDATA[>`
-and unknown entities outright — the DOCTYPE / entity-expansion class that
-accounts for most XML-parser CVEs does not apply. Only an allow-list of parts is
-extracted, with uncompressed-size caps enforced before and after inflation.
-Still: parse untrusted uploads inside a worker with an overall time/memory limit.
+### Security model
 
-**Not read**: images, charts, pivot tables, threaded (modern) comments,
-password-protected sheets/workbooks (protection state reads fine — the
-password itself isn't verified or reproduced, since quire has no way to
-verify Excel's legacy password hash against a real Excel instance). Reading is
-aimed at files from mainstream tools (Excel, Google Sheets, LibreOffice,
-`openpyxl`, `exceljs`, quire) — not corrupt files or every vendor quirk.
+The XML is parsed by a ~200-line in-house tokenizer (not a dependency) that
+rejects `<!DOCTYPE>`, `<!ENTITY>`, `<![CDATA[>` and unknown entities
+outright — the DOCTYPE / entity-expansion class that accounts for most
+XML-parser CVEs does not apply. Only an allow-list of parts is extracted, with
+uncompressed-size caps enforced before and after inflation (see
+[Limits](#limits)). Still: parse untrusted uploads inside a worker with an
+overall time/memory limit.
 
-## Streaming reader
+### Not read
+
+Images, charts, pivot tables, threaded (modern) comments, password-protected
+sheets/workbooks (protection state reads fine — the password itself isn't
+verified or reproduced, since quire has no way to verify Excel's legacy
+password hash against a real Excel instance). Reading is aimed at files from
+mainstream tools (Excel, Google Sheets, LibreOffice, `openpyxl`, `exceljs`,
+quire) — not corrupt files or every vendor quirk.
+
+### Streaming reader
 
 `readWorkbook()` materialises every cell of every loaded sheet in memory.
 `readRows()` streams one sheet's rows through a callback instead, so peak
@@ -392,48 +500,19 @@ interruptible mid-parse.
 
 ## Scope
 
-`quire` is **not** a drop-in ExcelJS replacement. The **writer** covers the
-common "export a styled spreadsheet" case; the **reader** covers "import the
-values from a normal `.xlsx`". Out of scope for both, permanently: images,
-charts, pivot tables, tables (`ListObject`), VBA macros (`.xlsm`), threaded
-(modern) comments, password-protected sheets/workbooks, `.xls` / `.xlsb`.
-
-## Streaming writer
-
-`createWorkbook()`'s `xlsx()` holds every cell in memory until you call it —
-fine up to a few hundred thousand rows, wasteful well beyond that.
-`createStreamingWorkbook()` renders and DEFLATEs each row as it's added instead,
-so memory stays flat regardless of row count:
-
-```js
-import { createStreamingWorkbook } from '@uekichinos/quire'
-
-const wb = createStreamingWorkbook()
-const sheet = wb.addWorksheet('Big', { columns: [{ width: 20 }], freeze: { ySplit: 1 } })
-
-sheet.addRow(['ID', 'Name', 'Created'])
-for (let i = 1; i <= 2_000_000; i++) {
-  sheet.addRow([i, `Row ${i}`, new Date(2024, 0, 1)])
-}
-
-const bytes = await wb.finish() // Uint8Array — same as xlsx(), just async
-```
-
-Everything from the buffered writer works — hyperlinks, rich text, merges,
-freeze panes, auto-filter, data validation, conditional formatting, comments,
-print setup, outline (grouping), protection, `defineName` — with one
-constraint: it's **one pass, forward-only**. There's no `setCell`/`setRow`
-random access, and `setColumn`/`freeze`/`setPageSetup` must be called before
-that sheet's first `addRow()` (they render into the header, which is flushed
-immediately). `merge`/`autoFilter`/`setDataValidation`/`addConditionalFormat`/
-`setComment`/`protect()` (sheet and workbook) can be called any time before
-`finish()`. Multiple sheets can be written interleaved or in any order.
+`quire` is **not** a drop-in ExcelJS replacement. The [writer](#writing)
+covers the common "export a styled spreadsheet" case; the
+[reader](#reading) covers "import the values from a normal `.xlsx`". Out of
+scope for both, permanently: images, charts, pivot tables, tables
+(`ListObject`), VBA macros (`.xlsm`), threaded (modern) comments,
+password-protected sheets/workbooks, `.xls` / `.xlsb`.
 
 ## Performance
 
 In-memory (buffered) writing of ~100k rows × 5 cols takes ~1 s; reading is
 comparable. Past that, or for an unbounded/very large row count, use the
-[streaming writer](#streaming-writer) and/or the [streaming reader](#streaming-reader).
+[streaming writer](#streaming-writer) and/or the
+[streaming reader](#streaming-reader).
 
 ## License
 
