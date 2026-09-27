@@ -1,5 +1,6 @@
 import { strFromU8, unzipSync } from 'fflate'
 import { describe, expect, it } from 'vitest'
+import { readWorkbook } from '../read'
 import { createWorkbook } from '../workbook'
 
 function build(fn: (wb: ReturnType<typeof createWorkbook>) => void): Record<string, string> {
@@ -191,6 +192,138 @@ describe('auto-filter', () => {
   it('has no defined name when no sheet filters', () => {
     const parts = build((wb) => wb.addWorksheet('S').addRow([1]))
     expect(parts['xl/workbook.xml']).not.toContain('definedNames')
+  })
+})
+
+describe('outline (grouping)', () => {
+  it('emits hidden + outlineLevel on rows and columns', () => {
+    const parts = build((wb) => {
+      const s = wb.addWorksheet('S')
+      s.setColumn(2, { hidden: true, outlineLevel: 1 })
+      s.addRow(['a'])
+      s.addRow(['b'], { hidden: true, outlineLevel: 2 })
+    })
+    const sheet = parts['xl/worksheets/sheet1.xml']!
+    expect(sheet).toContain('<col min="2" max="2" hidden="1" outlineLevel="1"/>')
+    expect(sheet).toContain('<row r="2" hidden="1" outlineLevel="2">')
+  })
+
+  it('emits <sheetPr><outlinePr> when summary direction is non-default', () => {
+    const parts = build((wb) => {
+      wb.addWorksheet('S', { outline: { summaryBelow: false, summaryRight: false } }).addRow(['a'])
+    })
+    const sheet = parts['xl/worksheets/sheet1.xml']!
+    expect(sheet).toContain('<sheetPr><outlinePr summaryBelow="0" summaryRight="0"/></sheetPr>')
+    expect(sheet.indexOf('<sheetPr>')).toBeLessThan(sheet.indexOf('<dimension'))
+  })
+
+  it('omits <sheetPr> entirely when outline direction is left at Excel defaults', () => {
+    const parts = build((wb) => {
+      wb.addWorksheet('S', { outline: {} }).addRow(['a'])
+    })
+    expect(parts['xl/worksheets/sheet1.xml']).not.toContain('<sheetPr>')
+  })
+
+  it('rejects an out-of-range outline level', () => {
+    const s = createWorkbook().addWorksheet('S')
+    expect(() => s.setColumn(1, { outlineLevel: 8 })).toThrow(/outlineLevel/)
+    expect(() => s.addRow(['a'], { outlineLevel: -1 })).toThrow(/outlineLevel/)
+  })
+
+  it('round-trips row/column outline info through readWorkbook', () => {
+    const wb = createWorkbook()
+    const s = wb.addWorksheet('S')
+    s.setColumn(2, { hidden: true, outlineLevel: 1 })
+    s.addRow(['a'])
+    s.addRow(['b'], { outlineLevel: 2 })
+    const sheet = readWorkbook(wb.xlsx()).sheet('S')!
+    expect(sheet.columnInfo.get(2)).toMatchObject({ hidden: true, outlineLevel: 1 })
+    expect(sheet.rowInfo.get(2)).toMatchObject({ outlineLevel: 2 })
+  })
+})
+
+describe('sheet/workbook protection', () => {
+  it('protect() with no options emits sheet="1" only (Excel UI defaults)', () => {
+    const wb = createWorkbook()
+    const s = wb.addWorksheet('S')
+    s.addRow(['a'])
+    s.protect()
+    const sheet = strFromU8(unzipSync(wb.xlsx())['xl/worksheets/sheet1.xml']!)
+    expect(sheet).toContain('<sheetProtection sheet="1"/>')
+  })
+
+  it('translates positive "allow" options into inverted-polarity XML attrs', () => {
+    const wb = createWorkbook()
+    const s = wb.addWorksheet('S')
+    s.addRow(['a'])
+    s.protect({
+      allowSelectLockedCells: false,
+      allowSelectUnlockedCells: false,
+      allowFormatCells: true,
+      allowSort: true,
+    })
+    const sheet = strFromU8(unzipSync(wb.xlsx())['xl/worksheets/sheet1.xml']!)
+    expect(sheet).toContain('selectLockedCells="1"')
+    expect(sheet).toContain('selectUnlockedCells="1"')
+    expect(sheet).toContain('formatCells="0"')
+    expect(sheet).toContain('sort="0"')
+    expect(sheet).not.toContain('formatColumns')
+  })
+
+  it('places <sheetProtection> after </sheetData> and before <autoFilter>', () => {
+    const parts = build((wb) => {
+      const s = wb.addWorksheet('S')
+      s.addRow(['a'])
+      s.autoFilter('A1:A1')
+      s.protect()
+    })
+    const sheet = parts['xl/worksheets/sheet1.xml']!
+    expect(sheet.indexOf('</sheetData>')).toBeLessThan(sheet.indexOf('<sheetProtection'))
+    expect(sheet.indexOf('<sheetProtection')).toBeLessThan(sheet.indexOf('<autoFilter'))
+  })
+
+  it('wb.protect() defaults lockStructure to true, and emits lockWindows when set', () => {
+    const wb = createWorkbook()
+    wb.addWorksheet('S').addRow(['a'])
+    wb.protect()
+    expect(strFromU8(unzipSync(wb.xlsx())['xl/workbook.xml']!)).toContain(
+      '<workbookProtection lockStructure="1"/>',
+    )
+
+    const wb2 = createWorkbook()
+    wb2.addWorksheet('S').addRow(['a'])
+    wb2.protect({ lockStructure: false, lockWindows: true })
+    expect(strFromU8(unzipSync(wb2.xlsx())['xl/workbook.xml']!)).toContain(
+      '<workbookProtection lockWindows="1"/>',
+    )
+  })
+
+  it('round-trips sheet + workbook protection through readWorkbook', () => {
+    const wb = createWorkbook()
+    const s = wb.addWorksheet('S')
+    s.addRow(['a'])
+    s.protect({ allowSort: true })
+    wb.protect({ lockWindows: true })
+    const read = readWorkbook(wb.xlsx())
+    expect(read.protection).toEqual({ lockStructure: true, lockWindows: true })
+    expect(read.sheet('S')!.protection).toMatchObject({ allowSort: true, allowFormatCells: false })
+  })
+
+  it('cell-level protection styling is only carried when non-default, and round-trips', () => {
+    const wb = createWorkbook()
+    const s = wb.addWorksheet('S')
+    s.setCell('A1', 'unlocked', { protection: { locked: false } })
+    s.setCell('A2', 'hidden-formula', { protection: { hidden: true } })
+    s.setCell('A3', 'default', { protection: { locked: true, hidden: false } })
+    const bytes = wb.xlsx()
+    const styles = strFromU8(unzipSync(bytes)['xl/styles.xml']!)
+    expect(styles).toContain('<protection locked="0"/>')
+    expect(styles).toContain('<protection hidden="1"/>')
+
+    const read = readWorkbook(bytes, { styles: true }).sheet('S')!
+    expect(read.cell('A1')!.style?.protection).toEqual({ locked: false })
+    expect(read.cell('A2')!.style?.protection).toEqual({ hidden: true })
+    expect(read.cell('A3')!.style?.protection).toBeUndefined()
   })
 })
 

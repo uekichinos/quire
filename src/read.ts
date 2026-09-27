@@ -56,9 +56,9 @@ interface ReadDataValidationBase {
 }
 
 /**
- * A data-validation rule. Only `list`, `whole`, `decimal`, `date` and `textLength` rules
- * are surfaced (mirrors what the writer can produce) — others (custom formula, time, a
- * cross-sheet list formula quirk, etc.) are silently skipped.
+ * A data-validation rule. Only `list`, `whole`, `decimal`, `date`, `textLength`, `time` and
+ * `custom` rules are surfaced (mirrors what the writer can produce) — others (a cross-sheet
+ * list formula quirk, etc.) are silently skipped.
  */
 export type ReadDataValidation =
   | (ReadDataValidationBase & {
@@ -80,12 +80,24 @@ export type ReadDataValidation =
       /** One resolved `Date`, or two for `between`/`notBetween`. */
       values: Date[]
     })
+  | (ReadDataValidationBase & {
+      type: 'time'
+      operator: string
+      /** `'HH:MM:SS'` strings — one, or two for `between`/`notBetween`. */
+      values: string[]
+    })
+  | (ReadDataValidationBase & {
+      type: 'custom'
+      formula: string
+    })
 
 /** A resolved conditional-formatting rule (only `cellIs`, `colorScale` and `dataBar` are surfaced). */
 export type ReadConditionalFormatRule =
   | { type: 'cellIs'; operator: string; formula: string[]; style?: ReadStyle }
   | { type: 'colorScale'; colors: string[] }
   | { type: 'dataBar'; color: string }
+  | { type: 'iconSet'; iconSet: string }
+  | { type: 'top10'; rank: number; percent?: boolean; bottom?: boolean; style?: ReadStyle }
 
 export interface ReadConditionalFormat {
   /** The `sqref` range(s) this applies to, verbatim. */
@@ -102,6 +114,43 @@ export interface ReadPageSetup {
   scale?: number
   margins?: { left?: number; right?: number; top?: number; bottom?: number; header?: number; footer?: number }
   printArea?: string
+}
+
+/** Structural sheet protection, from `<sheetProtection>` — positive ("allow") semantics, mirroring `SheetProtectionOptions`. */
+export interface ReadSheetProtection {
+  allowSelectLockedCells: boolean
+  allowSelectUnlockedCells: boolean
+  allowFormatCells: boolean
+  allowFormatColumns: boolean
+  allowFormatRows: boolean
+  allowInsertColumns: boolean
+  allowInsertRows: boolean
+  allowDeleteColumns: boolean
+  allowDeleteRows: boolean
+  allowSort: boolean
+  allowAutoFilter: boolean
+}
+
+/** Structural workbook protection, from `<workbookProtection>`, mirroring `WorkbookProtectionOptions`. */
+export interface ReadWorkbookProtection {
+  lockStructure: boolean
+  lockWindows: boolean
+}
+
+/** Layout facts about one column, from `<col>` — width/hidden/outline (grouping) level. */
+export interface ReadColumnInfo {
+  width?: number
+  hidden?: boolean
+  /** Outline (grouping) level, `0`–`7`. */
+  outlineLevel?: number
+}
+
+/** Layout facts about one row, from `<row>` — height/hidden/outline (grouping) level. */
+export interface ReadRowInfo {
+  height?: number
+  hidden?: boolean
+  /** Outline (grouping) level, `0`–`7`. */
+  outlineLevel?: number
 }
 
 export interface ReadCell {
@@ -174,10 +223,16 @@ export interface ReadWorksheet {
   readonly rowStyles: ReadonlyMap<number, ReadStyle>
   /** Data-validation rules on this sheet. */
   readonly dataValidations: readonly ReadDataValidation[]
-  /** Conditional-formatting rules on this sheet (`cellIs`, `colorScale` and `dataBar` only). */
+  /** Conditional-formatting rules on this sheet (`cellIs`/`colorScale`/`dataBar`/`iconSet`/`top10`). */
   readonly conditionalFormats: readonly ReadConditionalFormat[]
   /** Page orientation, paper size, fit-to-page/scale, margins and print area, if set. */
   readonly pageSetup?: ReadPageSetup
+  /** Column layout (width/hidden/outline level) by 1-based column, from `<col>`. */
+  readonly columnInfo: ReadonlyMap<number, ReadColumnInfo>
+  /** Row layout (height/hidden/outline level) by 1-based row, from `<row>`. */
+  readonly rowInfo: ReadonlyMap<number, ReadRowInfo>
+  /** Structural sheet protection, if the sheet is protected. */
+  readonly protection?: ReadSheetProtection
   /** One cell by A1 reference, or `undefined` if empty/out of range. */
   cell(ref: string): ReadCell | undefined
   /** Iterate the populated rows; each is a sparse array indexed by `col - 1`. */
@@ -198,6 +253,8 @@ export interface ReadDefinedName {
   /** The raw stored reference text, in case it isn't a simple single-sheet range. */
   refersTo: string
   hidden?: boolean
+  /** The sheet this name is scoped to (visible only there) — `undefined` if workbook-scoped. */
+  scope?: string
 }
 
 export interface ReadWorkbook {
@@ -206,6 +263,8 @@ export interface ReadWorkbook {
   readonly date1904: boolean
   /** User-defined named ranges (Excel-internal ones like `_xlnm._FilterDatabase` are excluded). */
   readonly definedNames: readonly ReadDefinedName[]
+  /** Structural workbook protection, if the workbook is protected. */
+  readonly protection?: ReadWorkbookProtection
   sheet(nameOrIndex: string | number): ReadWorksheet | undefined
 }
 
@@ -239,10 +298,16 @@ function parseDefinedNameRef(refersTo: string): { sheetName?: string; range?: st
 
 function parseWorkbook(
   xml: string,
-): { sheets: SheetRef[]; date1904: boolean; definedNames: RawDefinedName[] } {
+): {
+  sheets: SheetRef[]
+  date1904: boolean
+  definedNames: RawDefinedName[]
+  protection?: ReadWorkbookProtection
+} {
   const sheets: SheetRef[] = []
   const definedNames: RawDefinedName[] = []
   let date1904 = false
+  let protection: ReadWorkbookProtection | undefined
   let curName: { name: string; hidden: boolean; localSheetId?: number } | null = null
   let buf = ''
   parseXml(xml, {
@@ -253,6 +318,11 @@ function parseWorkbook(
       } else if (name === 'workbookPr' || name.endsWith(':workbookPr')) {
         const v = attrs.date1904
         date1904 = v === '1' || v === 'true'
+      } else if (name === 'workbookProtection' || name.endsWith(':workbookProtection')) {
+        protection = {
+          lockStructure: attrs.lockStructure === '1',
+          lockWindows: attrs.lockWindows === '1',
+        }
       } else if (name === 'definedName' || name.endsWith(':definedName')) {
         curName = {
           name: attrs.name ?? '',
@@ -272,7 +342,7 @@ function parseWorkbook(
       }
     },
   })
-  return { sheets, date1904, definedNames }
+  return { sheets, date1904, definedNames, protection }
 }
 
 function parseWorkbookRels(xml: string): Map<string, string> {
@@ -429,7 +499,17 @@ interface RawHyperlink {
   tooltip?: string
 }
 
-const SUPPORTED_VALIDATION_TYPES = new Set(['list', 'whole', 'decimal', 'date', 'textLength'])
+const SUPPORTED_VALIDATION_TYPES = new Set(['list', 'whole', 'decimal', 'date', 'textLength', 'time', 'custom'])
+
+/** Inverse of the writer's `timeToFraction` — a day fraction → `'HH:MM:SS'`. */
+function fractionToTime(fraction: number): string {
+  const totalSeconds = Math.round(fraction * 86400)
+  const h = Math.floor(totalSeconds / 3600) % 24
+  const m = Math.floor((totalSeconds % 3600) / 60)
+  const s = totalSeconds % 60
+  const pad = (n: number): string => String(n).padStart(2, '0')
+  return `${pad(h)}:${pad(m)}:${pad(s)}`
+}
 
 interface RawDataValidation {
   type: string
@@ -459,6 +539,9 @@ function resolveValidationRule(v: RawDataValidation, date1904: boolean): ReadDat
     const inline = trimmed.startsWith('"') && trimmed.endsWith('"') && trimmed.length >= 2
     return { ...base, type: 'list', ...(inline ? { list: trimmed.slice(1, -1).split(',') } : { formula: trimmed }) }
   }
+  if (v.type === 'custom') {
+    return { ...base, type: 'custom', formula: v.formula1.trim() }
+  }
   const rawValues = [v.formula1, v.formula2].filter((f): f is string => f !== undefined)
   if (v.type === 'date') {
     return {
@@ -466,6 +549,14 @@ function resolveValidationRule(v: RawDataValidation, date1904: boolean): ReadDat
       type: 'date',
       operator: v.operator ?? '',
       values: rawValues.map((f) => serialToDate(Number(f), date1904)),
+    }
+  }
+  if (v.type === 'time') {
+    return {
+      ...base,
+      type: 'time',
+      operator: v.operator ?? '',
+      values: rawValues.map((f) => fractionToTime(Number(f))),
     }
   }
   return {
@@ -488,6 +579,9 @@ interface RawSheet {
   dataValidations: ReadDataValidation[]
   conditionalFormats: ReadConditionalFormat[]
   pageSetup?: ReadPageSetup
+  columnInfo: Map<number, ReadColumnInfo>
+  rowInfo: Map<number, ReadRowInfo>
+  protection?: ReadSheetProtection
 }
 
 /**
@@ -556,13 +650,27 @@ function parseSheet(xml: string, ctx: SheetParseCtx): RawSheet {
   const conditionalFormats: { sqref: string; rule: ReadConditionalFormatRule | null }[] = []
   const columnStyleIdx = new Map<number, number>()
   const rowStyleIdx = new Map<number, number>()
+  const columnInfo = new Map<number, ReadColumnInfo>()
+  const rowInfo = new Map<number, ReadRowInfo>()
   let colStyleBudget = MAX_COLUMN
   let maxRow = 0
   let maxCol = 0
   let dimRef: string | undefined
   let curValidation: RawDataValidation | null = null
   let curCFRange = ''
-  let curCF: { type: string; dxfId?: number; operator?: string; formulas: string[]; colors: string[] } | null = null
+  let curCF:
+    | {
+        type: string
+        dxfId?: number
+        operator?: string
+        formulas: string[]
+        colors: string[]
+        rank?: number
+        percent?: boolean
+        bottom?: boolean
+        iconSet?: string
+      }
+    | null = null
   let inCFFormula = false
   let cfFormulaBuf = ''
   let inFormula1 = false
@@ -570,6 +678,7 @@ function parseSheet(xml: string, ctx: SheetParseCtx): RawSheet {
   let inFormula2 = false
   let formula2Buf = ''
   let pageSetup: ReadPageSetup | undefined
+  let protection: ReadSheetProtection | undefined
 
   let curRow = 0
   let lastRow = 0
@@ -712,9 +821,30 @@ function parseSheet(xml: string, ctx: SheetParseCtx): RawSheet {
             scale: attrs.scale !== undefined ? Number(attrs.scale) : undefined,
           }
           break
+        case 'sheetProtection':
+          protection = {
+            allowSelectLockedCells: attrs.selectLockedCells !== '1',
+            allowSelectUnlockedCells: attrs.selectUnlockedCells !== '1',
+            allowFormatCells: attrs.formatCells === '0',
+            allowFormatColumns: attrs.formatColumns === '0',
+            allowFormatRows: attrs.formatRows === '0',
+            allowInsertColumns: attrs.insertColumns === '0',
+            allowInsertRows: attrs.insertRows === '0',
+            allowDeleteColumns: attrs.deleteColumns === '0',
+            allowDeleteRows: attrs.deleteRows === '0',
+            allowSort: attrs.sort === '0',
+            allowAutoFilter: attrs.autoFilter === '0',
+          }
+          break
         case 'cfRule':
           curCF = { type: attrs.type ?? '', operator: attrs.operator, formulas: [], colors: [] }
           if (attrs.dxfId !== undefined) curCF.dxfId = Number(attrs.dxfId)
+          if (attrs.rank !== undefined) curCF.rank = Number(attrs.rank)
+          if (attrs.percent === '1') curCF.percent = true
+          if (attrs.bottom === '1') curCF.bottom = true
+          break
+        case 'iconSet':
+          if (curCF) curCF.iconSet = attrs.iconSet
           break
         case 'formula':
           if (curCF) {
@@ -753,6 +883,14 @@ function parseSheet(xml: string, ctx: SheetParseCtx): RawSheet {
           curRow = attrs.r ? Number(attrs.r) : lastRow + 1
           curCol = 0
           if (ctx.onRow) rowBuf = []
+          {
+            const hidden = attrs.hidden === '1'
+            const outlineLevel = attrs.outlineLevel !== undefined ? Number(attrs.outlineLevel) : undefined
+            const height = attrs.ht !== undefined ? Number(attrs.ht) : undefined
+            if (hidden || outlineLevel !== undefined || height !== undefined) {
+              rowInfo.set(curRow, { hidden: hidden || undefined, outlineLevel, height })
+            }
+          }
           if (withStyles && attrs.customFormat === '1' && attrs.s !== undefined) {
             const idx = Number(attrs.s)
             if (Number.isInteger(idx) && idx >= 0) rowStyleIdx.set(curRow, idx)
@@ -760,15 +898,19 @@ function parseSheet(xml: string, ctx: SheetParseCtx): RawSheet {
           break
         }
         case 'col': {
-          if (withStyles && attrs.style !== undefined && colStyleBudget > 0) {
-            const idx = Number(attrs.style)
-            if (Number.isInteger(idx) && idx >= 0) {
-              const min = Math.max(1, Number(attrs.min) || 1)
-              const max = Math.min(Number(attrs.max) || min, MAX_COLUMN)
-              for (let c = min; c <= max && colStyleBudget > 0; c++) {
-                columnStyleIdx.set(c, idx)
-                colStyleBudget--
-              }
+          const hidden = attrs.hidden === '1'
+          const outlineLevel = attrs.outlineLevel !== undefined ? Number(attrs.outlineLevel) : undefined
+          const width = attrs.width !== undefined ? Number(attrs.width) : undefined
+          const hasStyle = withStyles && attrs.style !== undefined
+          const hasLayout = hidden || outlineLevel !== undefined || width !== undefined
+          if ((hasStyle || hasLayout) && colStyleBudget > 0) {
+            const styleIdx = hasStyle ? Number(attrs.style) : -1
+            const min = Math.max(1, Number(attrs.min) || 1)
+            const max = Math.min(Number(attrs.max) || min, MAX_COLUMN)
+            for (let c = min; c <= max && colStyleBudget > 0; c++) {
+              if (hasStyle && Number.isInteger(styleIdx) && styleIdx >= 0) columnStyleIdx.set(c, styleIdx)
+              if (hasLayout) columnInfo.set(c, { hidden: hidden || undefined, outlineLevel, width })
+              colStyleBudget--
             }
           }
           break
@@ -857,6 +999,18 @@ function parseSheet(xml: string, ctx: SheetParseCtx): RawSheet {
               rule = { type: 'colorScale', colors: curCF.colors }
             } else if (curCF.type === 'dataBar' && curCF.colors[0]) {
               rule = { type: 'dataBar', color: curCF.colors[0] }
+            } else if (curCF.type === 'iconSet' && curCF.iconSet) {
+              rule = { type: 'iconSet', iconSet: curCF.iconSet }
+            } else if (curCF.type === 'top10' && curCF.rank !== undefined) {
+              const style =
+                withStyles && styles && curCF.dxfId !== undefined ? styles.dxfStyle[curCF.dxfId] : undefined
+              rule = {
+                type: 'top10',
+                rank: curCF.rank,
+                percent: curCF.percent,
+                bottom: curCF.bottom,
+                ...(style ? { style } : {}),
+              }
             }
             conditionalFormats.push({ sqref: curCFRange, rule })
             curCF = null
@@ -895,6 +1049,9 @@ function parseSheet(xml: string, ctx: SheetParseCtx): RawSheet {
       .filter((c) => c.rule !== null)
       .map((c) => ({ ref: c.sqref, rule: c.rule! })),
     pageSetup,
+    columnInfo,
+    rowInfo,
+    protection,
   }
 }
 
@@ -910,6 +1067,9 @@ class Worksheet implements ReadWorksheet {
   readonly dataValidations: readonly ReadDataValidation[]
   readonly conditionalFormats: readonly ReadConditionalFormat[]
   readonly pageSetup?: ReadPageSetup
+  readonly columnInfo: ReadonlyMap<number, ReadColumnInfo>
+  readonly rowInfo: ReadonlyMap<number, ReadRowInfo>
+  readonly protection?: ReadSheetProtection
 
   constructor(
     readonly name: string,
@@ -923,6 +1083,9 @@ class Worksheet implements ReadWorksheet {
     dataValidations: ReadDataValidation[] = [],
     conditionalFormats: ReadConditionalFormat[] = [],
     pageSetup?: ReadPageSetup,
+    columnInfo: Map<number, ReadColumnInfo> = new Map(),
+    rowInfo: Map<number, ReadRowInfo> = new Map(),
+    protection?: ReadSheetProtection,
   ) {
     this.merges = merges
     this.columnStyles = columnStyles
@@ -930,6 +1093,9 @@ class Worksheet implements ReadWorksheet {
     this.dataValidations = dataValidations
     this.conditionalFormats = conditionalFormats
     this.pageSetup = pageSetup
+    this.columnInfo = columnInfo
+    this.rowInfo = rowInfo
+    this.protection = protection
     if (dimRef && dimRef.includes(':')) {
       const [, br] = dimRef.split(':')
       const p = parseRef(br!)
@@ -989,6 +1155,7 @@ interface Prepared {
   sheetRefs: SheetRef[]
   date1904: boolean
   definedNames: ReadDefinedName[]
+  protection?: ReadWorkbookProtection
   /** Build one worksheet, or `null` if the `sheets` filter excludes it. */
   buildSheet(sr: SheetRef, index: number): Worksheet | null
 }
@@ -1006,12 +1173,20 @@ function prepare(
     sheets: sheetRefs,
     date1904,
     definedNames: rawDefinedNames,
+    protection: workbookProtection,
   } = parseWorkbook(parts.get('xl/workbook.xml')!)
   const definedNames: ReadDefinedName[] = rawDefinedNames
     .filter((d) => !d.name.toLowerCase().startsWith('_xlnm.'))
     .map((d) => {
       const { sheetName, range } = parseDefinedNameRef(d.refersTo)
-      return { name: d.name, sheetName, range, refersTo: d.refersTo, hidden: d.hidden || undefined }
+      return {
+        name: d.name,
+        sheetName,
+        range,
+        refersTo: d.refersTo,
+        hidden: d.hidden || undefined,
+        scope: d.localSheetId !== undefined ? sheetRefs[d.localSheetId]?.name : undefined,
+      }
     })
   const printAreaBySheet = new Map<number, string>()
   for (const d of rawDefinedNames) {
@@ -1064,6 +1239,7 @@ function prepare(
     sheetRefs,
     date1904,
     definedNames,
+    protection: workbookProtection,
     buildSheet(sr, index) {
       if (!shouldLoad(sr.name, index)) return null
       const target = rels.get(sr.rid) ?? `xl/worksheets/sheet${index + 1}.xml`
@@ -1116,6 +1292,9 @@ function prepare(
         raw.dataValidations,
         raw.conditionalFormats,
         pageSetup,
+        raw.columnInfo,
+        raw.rowInfo,
+        raw.protection,
       )
     },
   }
@@ -1125,12 +1304,14 @@ function assemble(
   built: Worksheet[],
   date1904: boolean,
   definedNames: readonly ReadDefinedName[],
+  protection?: ReadWorkbookProtection,
 ): ReadWorkbook {
   return {
     sheetNames: built.map((s) => s.name),
     sheets: built,
     date1904,
     definedNames,
+    protection,
     sheet(nameOrIndex) {
       return typeof nameOrIndex === 'number'
         ? built[nameOrIndex]
@@ -1152,13 +1333,13 @@ export function readWorkbook(
   input: Uint8Array | ArrayBuffer,
   options: ReadOptions = {},
 ): ReadWorkbook {
-  const { sheetRefs, date1904, definedNames, buildSheet } = prepare(input, options)
+  const { sheetRefs, date1904, definedNames, protection, buildSheet } = prepare(input, options)
   const built: Worksheet[] = []
   sheetRefs.forEach((sr, i) => {
     const w = buildSheet(sr, i)
     if (w) built.push(w)
   })
-  return assemble(built, date1904, definedNames)
+  return assemble(built, date1904, definedNames, protection)
 }
 
 /**
@@ -1170,14 +1351,14 @@ export async function readWorkbookAsync(
   input: Uint8Array | ArrayBuffer,
   options: ReadOptions = {},
 ): Promise<ReadWorkbook> {
-  const { sheetRefs, date1904, definedNames, buildSheet } = prepare(input, options)
+  const { sheetRefs, date1904, definedNames, protection, buildSheet } = prepare(input, options)
   const built: Worksheet[] = []
   for (let i = 0; i < sheetRefs.length; i++) {
     const w = buildSheet(sheetRefs[i]!, i)
     if (w) built.push(w)
     await Promise.resolve()
   }
-  return assemble(built, date1904, definedNames)
+  return assemble(built, date1904, definedNames, protection)
 }
 
 /** Sheet-level metadata returned by {@link readRows} alongside the row stream. */
@@ -1192,6 +1373,9 @@ export interface StreamRowsResult {
   dataValidations: readonly ReadDataValidation[]
   conditionalFormats: readonly ReadConditionalFormat[]
   pageSetup?: ReadPageSetup
+  columnInfo: ReadonlyMap<number, ReadColumnInfo>
+  rowInfo: ReadonlyMap<number, ReadRowInfo>
+  protection?: ReadSheetProtection
 }
 
 /**
@@ -1241,5 +1425,8 @@ export function readRows(
     dataValidations: worksheet.dataValidations,
     conditionalFormats: worksheet.conditionalFormats,
     pageSetup: worksheet.pageSetup,
+    columnInfo: worksheet.columnInfo,
+    rowInfo: worksheet.rowInfo,
+    protection: worksheet.protection,
   }
 }

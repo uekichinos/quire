@@ -76,24 +76,26 @@ const url = URL.createObjectURL(wb.blob())
 
 | `Workbook` | |
 |---|---|
-| `addWorksheet(name, options?)` | `options`: `{ columns?, freeze?, autoFilter? }`. Name: 1–31 chars, unique, no `\ / ? * [ ] :` |
-| `defineName(name, sheetName, range)` | workbook-scoped named range, e.g. `wb.defineName('SalesRange', 'Sales', 'A1:B10')` |
+| `addWorksheet(name, options?)` | `options`: `{ columns?, freeze?, autoFilter?, outline? }`. Name: 1–31 chars, unique, no `\ / ? * [ ] :` |
+| `defineName(name, sheetName, range, options?)` | named range, e.g. `wb.defineName('SalesRange', 'Sales', 'A1:B10')`; `{ scope: 'SheetName' }` limits visibility to one sheet |
+| `protect(options?)` | structural workbook protection (no password) — `{ lockStructure? (default true), lockWindows? }` |
 | `xlsx()` → `Uint8Array` | deterministic |
 | `blob()` → `Blob` | `spreadsheetml.sheet` mime |
 
 | `Worksheet` (all chainable) | |
 |---|---|
-| `addRow(values, { style?, height? })` | `values`: `CellInput[]` — a bare value or `{ value, style }` |
+| `addRow(values, { style?, height?, hidden?, outlineLevel? })` | `values`: `CellInput[]` — a bare value or `{ value, style }` |
 | `setCell(ref, value, style?)` | write to any A1 reference |
-| `setRow(i, { style?, height? })` | style/size a row even with no cells |
-| `setColumn(i, { width?, hidden?, style? })` | 1-based; column style resolves **column < row < cell** |
+| `setRow(i, { style?, height?, hidden?, outlineLevel? })` | style/size a row even with no cells |
+| `setColumn(i, { width?, hidden?, style?, outlineLevel? })` | 1-based; column style resolves **column < row < cell** |
 | `merge(range)` | `'A1:C1'`; rejects single-cell / backwards / overlapping |
 | `freeze({ xSplit?, ySplit? })` | frozen panes; `freeze({})` clears |
 | `autoFilter(range)` | header filter dropdowns |
-| `setDataValidation(range, rule, options?)` | dropdown, or a numeric/date/text-length rule |
-| `addConditionalFormat(range, rule)` | highlight matching cells, a colour scale, or a data bar |
+| `setDataValidation(range, rule, options?)` | dropdown, or a numeric/date/time/text-length/custom-formula rule |
+| `addConditionalFormat(range, rule)` | highlight matching cells, a colour scale, a data bar, an icon set, or top/bottom N |
 | `setComment(ref, text, { author? })` | a cell comment/note, independent of the cell's value |
 | `setPageSetup(options)` | orientation, paper size, fit-to-page/scale, margins, print area |
+| `protect(options?)` | structural sheet protection (no password) — see [Protection](#protection) |
 
 **Cell values:** `string · number · boolean · Date · { formula, result? } ·
 { hyperlink, text?, tooltip? } · RichTextRun[] · null`. Dates use the 1900
@@ -106,12 +108,22 @@ URI (`http(s)://`, `mailto:`, …) up to 2,079 characters. Re-setting the cell t
 a non-hyperlink value drops it. `sheet.setCell('A1', { hyperlink, text }, style)`
 combines it with a style.
 
-**Defined names:** `wb.defineName(name, sheetName, range)` — `sheetName` must
-already be added, `range` a single cell (`'A1'`) or a range (`'A1:C3'`). Names
-follow Excel's identifier rules (start with a letter/`_`/`\`, then letters,
-digits, `_` or `.`; can't read as a cell reference; can't use the reserved
-`_xlnm.` prefix) and must be unique (case-insensitively). Workbook-scoped only
-— sheet-scoped names aren't supported yet.
+**Defined names:** `wb.defineName(name, sheetName, range, options?)` —
+`sheetName` must already be added, `range` a single cell (`'A1'`) or a range
+(`'A1:C3'`). Names follow Excel's identifier rules (start with a letter/`_`/
+`\`, then letters, digits, `_` or `.`; can't read as a cell reference; can't
+use the reserved `_xlnm.` prefix) and must be unique (case-insensitively).
+Workbook-scoped (visible everywhere) by default; pass `{ scope: 'SheetName' }`
+(which must also already exist) to limit visibility to that one sheet — Excel
+then requires the sheet-qualified form (`SheetName!SalesRange`) from any other
+sheet.
+
+**Outline (grouping):** `addRow(values, { hidden?, outlineLevel? })` /
+`setRow(i, { hidden?, outlineLevel? })` / `setColumn(i, { hidden?,
+outlineLevel? })` — `outlineLevel` is `0`–`7`, matching Excel's own grouping
+depth. `addWorksheet(name, { outline: { summaryBelow?, summaryRight? } })`
+controls which side the summary row/column sits on (both default `true`,
+Excel's own default).
 
 **Row/column default styles:** `sheet.setRow(i, { style })` / `setColumn(i, {
 style })` now also mark the row/column itself with that default style (not
@@ -136,6 +148,10 @@ sheet.setDataValidation('D2:D100', { type: 'list', list: 'Lookup!$A$1:$A$5' })
 sheet.setDataValidation('E2:E100', { type: 'whole', operator: 'between', value: [0, 100] })
 sheet.setDataValidation('F2:F100', { type: 'date', operator: 'greaterThan', value: new Date(2024, 0, 1) })
 sheet.setDataValidation('G2:G100', { type: 'textLength', operator: 'lessThanOrEqual', value: 50 })
+sheet.setDataValidation('H2:H100', { type: 'time', operator: 'greaterThan', value: '09:00' })
+
+// a custom formula (without `=`) that must evaluate truthy — no operator/value
+sheet.setDataValidation('I2:I100', { type: 'custom', formula: 'MOD(I2,2)=0' })
 
 // shared options (2nd arg for list, 3rd arg otherwise) — allowBlank, prompt/error text
 sheet.setDataValidation('C2:C100', { type: 'list', list: ['Open', 'Done'] }, {
@@ -143,9 +159,9 @@ sheet.setDataValidation('C2:C100', { type: 'list', list: ['Open', 'Done'] }, {
 })
 ```
 For `list`, none of the fixed choices may contain a comma, and the joined list
-must fit Excel's 255-character limit. For the other types, `operator` is one
-of `between · notBetween · equal · notEqual · greaterThan · lessThan ·
-greaterThanOrEqual · lessThanOrEqual`.
+must fit Excel's 255-character limit. For `whole`/`decimal`/`date`/`time`/
+`textLength`, `operator` is one of `between · notBetween · equal · notEqual ·
+greaterThan · lessThan · greaterThanOrEqual · lessThanOrEqual`.
 
 **Conditional formatting:** `sheet.addConditionalFormat(range, rule)` — three
 rule kinds:
@@ -164,10 +180,18 @@ sheet.addConditionalFormat('C2:C100', { type: 'colorScale', colors: ['FF0000', '
 
 // data bar (length scales between the range's own min and max)
 sheet.addConditionalFormat('D2:D100', { type: 'dataBar', color: '638EC6' })
+
+// icon set (evenly-spaced percentile thresholds) — one of 17 standard Excel names
+sheet.addConditionalFormat('E2:E100', { type: 'iconSet', iconSet: '3TrafficLights1' })
+
+// top/bottom N — `percent` interprets rank as a percentage instead of a count
+sheet.addConditionalFormat('F2:F100', {
+  type: 'top10', rank: 10, bottom: false, style: { fill: 'C6EFCE' },
+})
 ```
 `cellIs` styling is limited to `font.bold`/`italic`/`color` and `fill` (Excel's
-differential-format record); `operator` takes the same set as data validation,
-with `formula` as a pair for `between`/`notBetween`.
+differential-format record, shared by `top10`); `operator` takes the same set
+as data validation, with `formula` as a pair for `between`/`notBetween`.
 
 **Comments:** `sheet.setComment(ref, text, { author? })` attaches a note to a
 cell, independent of whatever value (or no value) is there. Uses the classic
@@ -190,10 +214,44 @@ sheet.setPageSetup({
 defined name. In the **streaming writer**, `setPageSetup` must be called
 before that sheet's first `addRow()`, same as `setColumn`/`freeze`.
 
+### Protection
+
+`sheet.protect(options?)` / `wb.protect(options?)` add **structural** sheet/
+workbook protection — **no password support**: Excel's legacy password hash
+must be bit-exact, and there's no way to verify that against a real Excel
+instance here, so protection is lock-toggle-only.
+
+```js
+// every cell is implicitly locked once the sheet is protected — unlock the ones
+// that should stay editable via CellStyle.protection
+sheet.setCell('A1', 'Editable', { protection: { locked: false } })
+sheet.setCell('B1', { formula: 'SECRET()' }, { protection: { hidden: true } }) // hides the formula bar
+
+sheet.protect({ allowSort: true, allowAutoFilter: true }) // everything else stays at Excel's own defaults
+wb.protect({ lockWindows: true }) // lockStructure defaults to true
+```
+The API is deliberately **positive** ("allow X"), matching Excel's own Protect
+Sheet dialog defaults, rather than Excel's native XML attributes (which mix
+"default allowed" and "default disallowed" polarity depending on the flag) —
+quire translates internally so you never have to think about which way a
+given flag defaults:
+
+| `SheetProtectionOptions` | default | |
+|---|---|---|
+| `allowSelectLockedCells` / `allowSelectUnlockedCells` | `true` | selecting locked/unlocked cells |
+| `allowFormatCells` / `allowFormatColumns` / `allowFormatRows` | `false` | formatting |
+| `allowInsertColumns` / `allowInsertRows` / `allowDeleteColumns` / `allowDeleteRows` | `false` | structure edits |
+| `allowSort` / `allowAutoFilter` | `false` | sorting / the autofilter dropdowns |
+
+`WorkbookProtectionOptions` is `{ lockStructure? (default `true`), lockWindows?
+(default `false`) }` — locking the sheet list (add/remove/rename/reorder/hide)
+and/or the workbook window.
+
 **`CellStyle`:** `font` (`name`, `size`, `bold`, `italic`, `underline`, `color`)
 · `fill` (`'RRGGBB'` / `'AARRGGBB'`) · `align` (`horizontal`, `vertical`,
 `wrapText`, `indent`) · `border` (`top`/`right`/`bottom`/`left`/`all` →
-`{ style, color? }`) · `numFmt` (format code or built-in id). Every distinct
+`{ style, color? }`) · `numFmt` (format code or built-in id) · `protection`
+(`{ locked?, hidden? }` — see [Protection](#protection)). Every distinct
 style is interned once. Cell style merges over row style over column style, one
 nested level deep.
 
@@ -256,27 +314,41 @@ cell (no `<c>` element at all) in that column/row would look like.
 (`_xlnm._FilterDatabase` and other Excel-internal names are excluded). Each
 entry resolves `sheetName`/`range` when the reference is a simple single-sheet
 range; anything else (a formula, a multi-area reference, a named constant)
-keeps `refersTo` with `sheetName`/`range` left `undefined`.
+keeps `refersTo` with `sheetName`/`range` left `undefined`. `scope` resolves to
+the scoping sheet's name for a sheet-scoped name, `undefined` for a
+workbook-scoped one.
 
 **Data validation** — `sheet.dataValidations` lists `list` / `whole` /
-`decimal` / `date` / `textLength` rules (other types — custom formula, time,
-etc. — are skipped). A `list` rule resolves `list` (inline choices) or
-`formula` (range reference); the others resolve `operator` and `values`
-(numbers, or `Date`s for `type: 'date'` — one entry, or two for
-`between`/`notBetween`).
+`decimal` / `date` / `time` / `textLength` / `custom` rules (every
+`ST_DataValidationType` except `none`, which is skipped). A `list` rule
+resolves `list` (inline choices) or `formula` (range reference); `custom`
+resolves `formula`; `time` resolves `operator` and `values` as `'HH:MM:SS'`
+strings; the rest resolve `operator` and `values` (numbers, or `Date`s for
+`type: 'date'` — one entry, or two for `between`/`notBetween`).
+
+**Outline (grouping)** — `sheet.columnInfo` / `sheet.rowInfo` (`Map<number,
+{ width?/height?, hidden?, outlineLevel? }>`, 1-based) resolve `<col>`/`<row>`
+layout facts, whether or not the column/row also carries a default style.
 
 **Conditional formatting** — `sheet.conditionalFormats` lists `cellIs`,
-`colorScale` and `dataBar` rules as `{ ref, rule }` (other rule kinds — icon
-sets, top/bottom N, etc. — are skipped). `cellIs` resolves `operator`,
-`formula` (one or two, as written), and `style` (a `ReadStyle` with only
+`colorScale`, `dataBar`, `iconSet` and `top10` rules as `{ ref, rule }`.
+`cellIs`/`top10` resolve `style` (a `ReadStyle` with only
 `font.bold`/`italic`/`color` and `fill` populated — the differential-format's
-own limited scope) under `{ styles: true }`. `colorScale` resolves `colors`;
-`dataBar` resolves `color`.
+own limited scope) under `{ styles: true }`; `cellIs` also resolves `operator`
+and `formula` (one or two, as written); `top10` also resolves `rank`/
+`percent`/`bottom`. `colorScale` resolves `colors`; `dataBar` resolves
+`color`; `iconSet` resolves `iconSet` (the standard Excel name).
 
 **Print setup** — `sheet.pageSetup` resolves `orientation`, `paperSize`,
 `fitToWidth`/`fitToHeight`, `scale`, `margins`, and `printArea` (from the
 sheet's own `_xlnm.Print_Area` defined name) — `undefined` when the sheet has
 neither a `<pageSetup>`/`<pageMargins>` block nor a print area.
+
+**Protection** — `sheet.protection` / `wb.protection` resolve the same
+positive ("allow"/`lockStructure`/`lockWindows`) shape the writer's
+`sheet.protect()`/`wb.protect()` take, `undefined` when not protected. A
+cell's `ReadStyle.protection` (`{ locked?, hidden? }`) resolves under
+`{ styles: true }`.
 
 **Deliberately strict and small.** The XML is parsed by a ~200-line in-house
 tokenizer (not a dependency) that rejects `<!DOCTYPE>`, `<!ENTITY>`, `<![CDATA[>`
@@ -285,9 +357,10 @@ accounts for most XML-parser CVEs does not apply. Only an allow-list of parts is
 extracted, with uncompressed-size caps enforced before and after inflation.
 Still: parse untrusted uploads inside a worker with an overall time/memory limit.
 
-**Not read**: images, charts, pivot tables, sheet-scoped defined names, data
-validation types beyond list/whole/decimal/date/textLength, conditional-format
-types beyond cellIs/colorScale/dataBar, threaded (modern) comments. Reading is
+**Not read**: images, charts, pivot tables, threaded (modern) comments,
+password-protected sheets/workbooks (protection state reads fine — the
+password itself isn't verified or reproduced, since quire has no way to
+verify Excel's legacy password hash against a real Excel instance). Reading is
 aimed at files from mainstream tools (Excel, Google Sheets, LibreOffice,
 `openpyxl`, `exceljs`, quire) — not corrupt files or every vendor quirk. See
 [`PLAN-READER.md`](./PLAN-READER.md).
@@ -351,13 +424,13 @@ const bytes = await wb.finish() // Uint8Array — same as xlsx(), just async
 
 Everything from the buffered writer works — hyperlinks, rich text, merges,
 freeze panes, auto-filter, data validation, conditional formatting, comments,
-print setup, `defineName` — with one constraint: it's **one pass,
-forward-only**. There's no `setCell`/`setRow` random access, and
-`setColumn`/`freeze`/`setPageSetup` must be called before that sheet's first
-`addRow()` (they render into the header, which is flushed immediately).
-`merge`/`autoFilter`/`setDataValidation`/`addConditionalFormat`/`setComment`
-can be called any time before `finish()`. Multiple sheets can be written
-interleaved or in any order.
+print setup, outline (grouping), protection, `defineName` — with one
+constraint: it's **one pass, forward-only**. There's no `setCell`/`setRow`
+random access, and `setColumn`/`freeze`/`setPageSetup` must be called before
+that sheet's first `addRow()` (they render into the header, which is flushed
+immediately). `merge`/`autoFilter`/`setDataValidation`/`addConditionalFormat`/
+`setComment`/`protect()` (sheet and workbook) can be called any time before
+`finish()`. Multiple sheets can be written interleaved or in any order.
 
 ## Performance
 

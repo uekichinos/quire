@@ -2,6 +2,82 @@
 
 All notable changes to `@uekichinos/quire` are documented here.
 
+## [Unreleased]
+
+Sheet-scoped defined names, custom-formula + time data validation, icon-set +
+top/bottom-N conditional formats, row/column outline (grouping), and
+structural sheet/workbook protection. Still **one runtime dependency**
+(`fflate`).
+
+### Sheet/workbook protection (read + write) — structural only, no password
+- Write: `sheet.protect(options?)` — positive ("allow") API:
+  `allowSelectLockedCells`/`allowSelectUnlockedCells` (default `true`),
+  `allowFormatCells`/`allowFormatColumns`/`allowFormatRows`/
+  `allowInsertColumns`/`allowInsertRows`/`allowDeleteColumns`/
+  `allowDeleteRows`/`allowSort`/`allowAutoFilter` (default `false`) — quire
+  translates these into Excel's own inverted-polarity `<sheetProtection>`
+  attributes internally, so callers never have to think about which way a
+  given flag defaults
+- Write: `wb.protect(options?)` — `{ lockStructure? (default true),
+  lockWindows? }`, emitting `<workbookProtection>`
+- Write: `CellStyle.protection` — `{ locked?, hidden? }`, only meaningful once
+  the sheet is protected (every cell is implicitly locked until styled
+  otherwise); only carried into `styles.xml` when it differs from Excel's own
+  xf default
+- Read: `sheet.protection` / `wb.protection` resolve the same positive shape
+  back from `<sheetProtection>`/`<workbookProtection>`; `ReadStyle.protection`
+  resolves `<protection>` on a cell's `<xf>`
+- **No password support** — Excel's legacy password hash must be bit-exact
+  and can't be verified against a real Excel instance in this environment;
+  protection here is structural-only (locks are enforced by cell `locked`
+  state, not gated behind a password)
+- Supported by both the buffered and the streaming writer; on the streaming
+  writer, `protect()` can be called any time before `finish()` (it renders
+  into each sheet's tail, not its header)
+
+### Row/column outline (grouping) (read + write)
+- Write: `addRow(values, { outlineLevel })` / `setRow(i, { outlineLevel })` /
+  `setColumn(i, { outlineLevel })` (`0`–`7`), `hidden` on rows and columns;
+  `addWorksheet(name, { outline: { summaryBelow?, summaryRight? } })` controls
+  which side the summary row/column sits on (both default `true`, Excel's own
+  default) — rendered as `<sheetPr><outlinePr>`
+- Read: `sheet.columnInfo` / `sheet.rowInfo` (`Map<number, { width?/height?,
+  hidden?, outlineLevel? }>`, 1-based) resolve `<col>`/`<row>` layout facts
+- Supported by both the buffered and the streaming writer
+
+### Conditional formatting — icon sets and top/bottom N
+- Write: `addConditionalFormat(range, { type: 'iconSet', iconSet })` — any of
+  the 17 standard Excel icon-set names, thresholds evenly spaced by percentile;
+  `{ type: 'top10', rank, percent?, bottom?, style }` — highlights the top (or,
+  with `bottom`, the bottom) `rank` cells, or percent of cells when `percent`
+  is set
+- Read: `sheet.conditionalFormats` now also resolves `iconSet` and `top10`
+  rules; `top10.style` resolves under `{ styles: true }` via the existing
+  `dxfStyle` pool
+
+### Data validation — custom formula and time
+- Write: `setDataValidation(range, { type: 'custom', formula })` — an Excel
+  formula (without `=`) that must evaluate truthy; no comparison operator
+- Write: `setDataValidation(range, { type: 'time', operator, value })` —
+  `'HH:MM'`/`'HH:MM:SS'` (or a `[min, max]` pair for `between`/`notBetween`),
+  stored as Excel's own day-fraction
+- Read: `sheet.dataValidations` now also resolves `custom` (`{ formula }`) and
+  `time` (`{ values: string[] }`, `'HH:MM:SS'`) rules
+
+### Defined names — sheet scope
+- Write: `wb.defineName(name, sheetName, range, { scope })` limits visibility
+  to one sheet (which must already exist) instead of the whole workbook,
+  emitting `localSheetId` on the `<definedName>`
+- Read: `ReadDefinedName.scope` resolves back to the scoping sheet's name, or
+  `undefined` for a workbook-scoped name
+
+### Deferred (not in this round)
+- **Threaded (modern) comments** — needs new part types (`persons.xml`,
+  `threadedComments*.xml`) and GUID-based reply chains, for a feature the
+  already-shipped classic comments already cover visually
+- **Password-protected sheets/workbooks** — see "Sheet/workbook protection"
+  above
+
 ## [0.5.0] - 2026-09-27
 
 Data validation, rich text, comments, conditional formatting, print setup,

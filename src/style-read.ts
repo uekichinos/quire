@@ -37,6 +37,11 @@ export interface ReadStyle {
   }
   /** Resolved number-format code (`'0.00'`, `'yyyy-mm-dd'`, …). */
   numFmt?: string
+  /** Only meaningful once the sheet is protected. */
+  protection?: {
+    locked?: boolean
+    hidden?: boolean
+  }
 }
 
 export interface StyleSheet {
@@ -315,6 +320,11 @@ export function parseStyleSheet(xml: string, options: ParseStyleOptions): StyleS
             if (attrs.wrapText === '1') a.wrapText = true
             if (attrs.indent) a.indent = Number(attrs.indent)
             if (Object.keys(a).length) curXf.style.align = a
+          } else if (ln === 'protection' && curXf) {
+            const p: NonNullable<ReadStyle['protection']> = {}
+            if (attrs.locked === '0') p.locked = false
+            if (attrs.hidden === '1') p.hidden = true
+            if (Object.keys(p).length) curXf.style.protection = p
           }
           break
         case 'dxfs':

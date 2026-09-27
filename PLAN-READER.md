@@ -368,6 +368,54 @@ just deferred, plus two smaller, contained additions:
 resumable tokenizer), sheet-scoped conditional formats, data-bar gradient
 customization (min/max always the range's own, no custom `cfvo` thresholds).
 
+### R11 — sheet-scoped names, custom/time validation, icon sets/top10, outline, protection ✅ done (unreleased)
+The remaining items from R9/R10's gap comparison, worked through in one round:
+- **Sheet-scoped defined names** — `wb.defineName(name, sheetName, range,
+  { scope })` resolves `scope` to a `localSheetId` (the scoping sheet's own
+  index); read side resolves it back to that sheet's name via the existing
+  `sheetRefs` array
+- **Custom-formula + time data validation** — extends R9's validation union
+  with `{ type: 'custom', formula }` (no operator/value pair — an explicit
+  branch was needed in both writers' `setDataValidation` since discriminated-
+  union narrowing doesn't fall through the generic operator/value check) and
+  `{ type: 'time', operator, value }`, stored as Excel's own day-fraction via
+  a new `timeToFraction`/`fractionToTime` pair (inverse of each other)
+- **Icon-set + top10 conditional formats** — extends R9's conditional-format
+  union with `iconSet` (evenly-spaced percent `cfvo` thresholds derived from
+  the icon-set name's leading digit) and `top10` (a self-closing `<cfRule
+  type="top10" .../>`, styled through the existing dxf pool like `cellIs`)
+- **Row/column outline (grouping)** — `hidden`/`outlineLevel` on rows and
+  columns, plus `addWorksheet(..., { outline: { summaryBelow?,
+  summaryRight? } })`. Needed a new shared `sheetPrXmlOf(pageSetup, outline)`
+  function, since R10's fit-to-page flag and this round's outline direction
+  both write into the *same* single `<sheetPr>` element (schema allows only
+  one) — replaces the narrower `sheetPr` output `pageSetupXmlOf` used to
+  produce. The read-side `<col>` loop was unified to expand style index AND
+  layout info off the same shared `colStyleBudget`, so the existing
+  resource-exhaustion guard still covers both in one pass
+- **Structural sheet/workbook protection** — `sheet.protect(options?)` /
+  `wb.protect(options?)`, plus `CellStyle.protection: { locked?, hidden? }`
+  (interned into a new `ResolvedXf.protection` field, only carried when it
+  differs from Excel's own default). The public API is deliberately
+  *positive* ("allow X", default matching Excel's own Protect Sheet dialog
+  defaults) — Excel's native `<sheetProtection>` XML attributes have mixed,
+  confusing polarity (`selectLockedCells`/`selectUnlockedCells` default to
+  *allowed*; everything else defaults to *disallowed while protected*), which
+  the writer translates internally so callers never see it. No password
+  support (see below)
+
+**Deferred:**
+- **Threaded (modern) comments** — needs new part types (`persons.xml`,
+  `threadedComments*.xml`) and GUID-based reply chains, for a feature the
+  already-shipped classic comments (R8) already cover visually. Disproportionate
+  complexity versus marginal value over what's already shipped
+- **Password-protected sheets/workbooks** — Excel's legacy password hash must
+  be bit-exact and there's no real Excel instance available in this
+  environment to verify it against; shipping a wrong hash would be a silent,
+  misleading correctness bug, worse than not shipping the feature. Protection
+  this round is structural-only (cell `locked`/`hidden` state, no password
+  gate)
+
 ---
 
 ## 9. Questions for you

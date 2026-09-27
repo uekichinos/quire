@@ -359,6 +359,27 @@ describe('createWorkbook — defined names', () => {
       { name: 'SalesRange', sheetName: 'Sales', range: 'A1:B10', refersTo: "'Sales'!$A$1:$B$10", hidden: undefined },
     ])
   })
+
+  it('writes a sheet-scoped name with localSheetId, and round-trips its scope', () => {
+    const wb = createWorkbook()
+    wb.addWorksheet('Sales').addRow(['h'])
+    wb.addWorksheet('Other').addRow(['h'])
+    wb.defineName('SalesRange', 'Sales', 'A1:B10', { scope: 'Sales' })
+    const workbookXml = strFromU8(unzipSync(wb.xlsx())['xl/workbook.xml']!)
+    expect(workbookXml).toContain(
+      `<definedName name="SalesRange" localSheetId="0">'Sales'!$A$1:$B$10</definedName>`,
+    )
+    const back = readWorkbook(wb.xlsx())
+    expect(back.definedNames[0]).toMatchObject({ name: 'SalesRange', scope: 'Sales' })
+  })
+
+  it('rejects a scope naming a worksheet that does not exist', () => {
+    const wb = createWorkbook()
+    wb.addWorksheet('Sales').addRow(['h'])
+    expect(() => wb.defineName('SalesRange', 'Sales', 'A1:B10', { scope: 'NoSuchSheet' })).toThrow(
+      /no worksheet named "NoSuchSheet"/,
+    )
+  })
 })
 
 describe('createWorkbook — row default style (empty cells)', () => {
@@ -501,6 +522,46 @@ describe('createWorkbook — data validation', () => {
     expect(rule.type).toBe('date')
     expect((rule as { values: Date[] }).values[0]).toEqual(new Date(2024, 0, 1))
   })
+
+  it('writes a custom-formula rule with no operator, and round-trips it', () => {
+    const parts = build((wb) => {
+      const s = wb.addWorksheet('S')
+      s.addRow(['x'])
+      s.setDataValidation('A1:A10', { type: 'custom', formula: 'MOD(A1,2)=0' })
+    })
+    const xml = parts['xl/worksheets/sheet1.xml']!
+    expect(xml).toContain(
+      '<dataValidation type="custom" allowBlank="1" showInputMessage="1" showErrorMessage="1" sqref="A1:A10">' +
+        '<formula1>MOD(A1,2)=0</formula1></dataValidation>',
+    )
+    expect(xml).not.toContain('operator=')
+
+    const wb2 = createWorkbook()
+    const s2 = wb2.addWorksheet('S')
+    s2.addRow(['x'])
+    s2.setDataValidation('A1:A10', { type: 'custom', formula: 'MOD(A1,2)=0' })
+    const rule = readWorkbook(wb2.xlsx()).sheet('S')!.dataValidations[0]!
+    expect(rule).toMatchObject({ ref: 'A1:A10', type: 'custom', formula: 'MOD(A1,2)=0' })
+  })
+
+  it('rejects a custom rule with an empty formula', () => {
+    const s = createWorkbook().addWorksheet('S')
+    expect(() => s.setDataValidation('A1', { type: 'custom', formula: '' })).toThrow(/non-empty formula/)
+  })
+
+  it('writes a time rule as an Excel day-fraction, and round-trips it back to "HH:MM:SS"', () => {
+    const wb = createWorkbook()
+    const s = wb.addWorksheet('S')
+    s.addRow(['x'])
+    s.setDataValidation('A1', { type: 'time', operator: 'greaterThan', value: '12:30:00' })
+    const bytes = wb.xlsx()
+    expect(strFromU8(unzipSync(bytes)['xl/worksheets/sheet1.xml']!)).toContain(
+      '<dataValidation type="time" allowBlank="1" operator="greaterThan" showInputMessage="1" showErrorMessage="1" sqref="A1">' +
+        '<formula1>0.5208333333333334</formula1></dataValidation>',
+    )
+    const rule = readWorkbook(bytes).sheet('S')!.dataValidations[0]!
+    expect(rule).toMatchObject({ type: 'time', operator: 'greaterThan', values: ['12:30:00'] })
+  })
 })
 
 describe('createWorkbook — conditional formatting', () => {
@@ -576,6 +637,54 @@ describe('createWorkbook — conditional formatting', () => {
     expect(sheet.conditionalFormats).toEqual([
       { ref: 'A1:A100', rule: { type: 'dataBar', color: 'FF638EC6' } },
     ])
+  })
+
+  it('writes a 3-icon iconSet rule with evenly-spaced thresholds, and round-trips it', () => {
+    const wb = createWorkbook()
+    const s = wb.addWorksheet('S')
+    s.addRow([1])
+    s.addConditionalFormat('A1:A100', { type: 'iconSet', iconSet: '3TrafficLights1' })
+    const bytes = wb.xlsx()
+    const sheetXml = strFromU8(unzipSync(bytes)['xl/worksheets/sheet1.xml']!)
+    expect(sheetXml).toContain('<iconSet iconSet="3TrafficLights1">')
+    expect(sheetXml.match(/<cfvo /g)).toHaveLength(3)
+    const sheet = readWorkbook(bytes).sheet('S')!
+    expect(sheet.conditionalFormats).toEqual([
+      { ref: 'A1:A100', rule: { type: 'iconSet', iconSet: '3TrafficLights1' } },
+    ])
+  })
+
+  it('writes a top10 rule with rank/percent/bottom, and round-trips it', () => {
+    const wb = createWorkbook()
+    const s = wb.addWorksheet('S')
+    s.addRow([1])
+    s.addConditionalFormat('A1:A100', {
+      type: 'top10',
+      rank: 10,
+      percent: true,
+      bottom: true,
+      style: { fill: '00FF00' },
+    })
+    const bytes = wb.xlsx()
+    const sheetXml = strFromU8(unzipSync(bytes)['xl/worksheets/sheet1.xml']!)
+    expect(sheetXml).toMatch(/<cfRule type="top10" dxfId="\d+" priority="1" rank="10" percent="1" bottom="1"\/>/)
+    const sheet = readWorkbook(bytes, { styles: true }).sheet('S')!
+    expect(sheet.conditionalFormats).toEqual([
+      {
+        ref: 'A1:A100',
+        rule: { type: 'top10', rank: 10, percent: true, bottom: true, style: { fill: 'FF00FF00' } },
+      },
+    ])
+  })
+
+  it('rejects an invalid top10 rank', () => {
+    const s = createWorkbook().addWorksheet('S')
+    expect(() =>
+      s.addConditionalFormat('A1', { type: 'top10', rank: 0, style: {} }),
+    ).toThrow(/positive integer/)
+    expect(() =>
+      s.addConditionalFormat('A1', { type: 'top10', rank: 150, percent: true, style: {} }),
+    ).toThrow(/≤100/)
   })
 })
 

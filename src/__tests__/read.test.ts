@@ -484,14 +484,14 @@ describe('readWorkbook — rich text', () => {
 })
 
 describe('readWorkbook — data validation', () => {
-  it('surfaces list/whole/decimal/date/textLength rules, ignoring unsupported ones', () => {
+  it('surfaces list/whole/decimal/date/textLength/time/custom rules, ignoring type="none"', () => {
     const bytes = makeXlsx({
       '[Content_Types].xml': CT,
       '_rels/.rels': RELS,
       'xl/workbook.xml': `<?xml version="1.0"?><workbook xmlns:r="x"><sheets><sheet name="S" sheetId="1" r:id="rId1"/></sheets></workbook>`,
       'xl/_rels/workbook.xml.rels': `<?xml version="1.0"?><Relationships xmlns="x"><Relationship Id="rId1" Type="x" Target="worksheets/sheet1.xml"/></Relationships>`,
       'xl/worksheets/sheet1.xml': `<?xml version="1.0"?><worksheet><sheetData/><dataValidations count="3">` +
-        `<dataValidation type="custom" sqref="A1"><formula1>ISNUMBER(A1)</formula1></dataValidation>` +
+        `<dataValidation type="none" sqref="A1"/>` +
         `<dataValidation type="whole" operator="greaterThan" sqref="B1"><formula1>0</formula1></dataValidation>` +
         `<dataValidation type="list" sqref="C1:C5" allowBlank="0"><formula1>"X,Y"</formula1></dataValidation>` +
         `</dataValidations></worksheet>`,

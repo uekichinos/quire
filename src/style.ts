@@ -42,6 +42,13 @@ export interface BorderStyleInput {
   all?: BorderEdge
 }
 
+export interface ProtectionStyle {
+  /** Whether the cell is locked when the sheet is protected. Excel's own default: `true`. */
+  locked?: boolean
+  /** Whether the cell's formula is hidden from the formula bar when the sheet is protected. */
+  hidden?: boolean
+}
+
 export interface CellStyle {
   font?: FontStyle
   /** Solid fill colour, `'RRGGBB'` or `'AARRGGBB'`. */
@@ -50,6 +57,8 @@ export interface CellStyle {
   border?: BorderStyleInput
   /** A format code (`'0.00'`, `'#,##0'`, `'yyyy-mm-dd'`) or a built-in id. */
   numFmt?: string | number
+  /** Only meaningful once the sheet is protected (`sheet.protect()`). */
+  protection?: ProtectionStyle
 }
 
 /** `'RRGGBB'` / `'AARRGGBB'` / `'#RRGGBB'` → upper-case 8-digit ARGB. */
@@ -95,6 +104,10 @@ export function mergeStyle(
     align: base.align || override.align ? { ...base.align, ...override.align } : undefined,
     border:
       base.border || override.border ? { ...base.border, ...override.border } : undefined,
+    protection:
+      base.protection || override.protection
+        ? { ...base.protection, ...override.protection }
+        : undefined,
   }
 }
 
@@ -105,6 +118,7 @@ export function isEmptyStyle(style: CellStyle | undefined): boolean {
     style.fill === undefined &&
     (!style.font || Object.keys(style.font).length === 0) &&
     (!style.align || Object.keys(style.align).length === 0) &&
-    (!style.border || Object.keys(style.border).length === 0)
+    (!style.border || Object.keys(style.border).length === 0) &&
+    (!style.protection || Object.keys(style.protection).length === 0)
   )
 }

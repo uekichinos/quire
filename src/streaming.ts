@@ -42,12 +42,17 @@ import {
   renderCellXml,
   renderValidationFormulas,
   SharedStrings,
+  sheetPrXmlOf,
+  sheetProtectionXmlOf,
   sheetViewsXml,
+  validateConditionalFormatRule,
   validateDefinedName,
   validateNamedRangeTarget,
+  validateOutlineLevel,
   validatePageSetup,
   validateSheetName,
   vmlDrawingXmlOf,
+  workbookProtectionXmlOf,
   type AddRowOptions,
   type CellInput,
   type CellScalar,
@@ -56,9 +61,13 @@ import {
   type ConditionalFormatRule,
   type DataValidationOptions,
   type DataValidationRule,
+  type DefineNameOptions,
   type FreezeOptions,
+  type OutlineOptions,
   type PageSetupOptions,
+  type SheetProtectionOptions,
   type StoredScalar,
+  type WorkbookProtectionOptions,
   type WorksheetOptions,
 } from './workbook'
 
@@ -88,12 +97,19 @@ export interface StreamingWorksheet {
    * before the first `addRow()` — it renders the `<sheetPr>` fit-to-page flag into the header.
    */
   setPageSetup(options: PageSetupOptions): this
+  /**
+   * Protect the sheet structurally (no password — see `Worksheet.protect`). Can be called any
+   * time before `finish()`.
+   */
+  protect(options?: SheetProtectionOptions): this
 }
 
 export interface StreamingWorkbook {
   addWorksheet(name: string, options?: WorksheetOptions): StreamingWorksheet
-  /** Define a workbook-scoped named range. `sheetName` must already have been added. */
-  defineName(name: string, sheetName: string, range: string): this
+  /** Define a named range. `sheetName` must already have been added; see `Workbook.defineName`. */
+  defineName(name: string, sheetName: string, range: string, options?: DefineNameOptions): this
+  /** Protect the workbook structurally (no password — see `Workbook.protect`). */
+  protect(options?: WorkbookProtectionOptions): this
   /** Finalises every sheet and resolves the complete `.xlsx` bytes. */
   finish(): Promise<Uint8Array>
 }
@@ -108,6 +124,8 @@ class StreamingQuireWorksheet implements StreamingWorksheet {
   private validations: { range: string; rule: DataValidationRule; options: DataValidationOptions }[] = []
   private conditionalFormats: { range: string; rule: ConditionalFormatRule }[] = []
   private pageSetup: PageSetupOptions | null = null
+  private outline: OutlineOptions | undefined
+  private protection: SheetProtectionOptions | null = null
   private nextRow = 1
   private headerWritten = false
   private finished = false
@@ -123,6 +141,7 @@ class StreamingQuireWorksheet implements StreamingWorksheet {
     options.columns?.forEach((spec, i) => this.setColumn(i + 1, spec))
     if (options.freeze) this.freeze(options.freeze)
     if (options.autoFilter) this.autoFilter(options.autoFilter)
+    this.outline = options.outline
   }
 
   setColumn(index: number, spec: ColumnSpec): this {
@@ -135,6 +154,7 @@ class StreamingQuireWorksheet implements StreamingWorksheet {
     if (spec.width != null && !(spec.width >= 0)) {
       throw new QuireError('column width must be a non-negative number')
     }
+    validateOutlineLevel(spec.outlineLevel)
     this.columns.set(index, { ...this.columns.get(index), ...spec })
     return this
   }
@@ -197,6 +217,10 @@ class StreamingQuireWorksheet implements StreamingWorksheet {
       } else if (!rule.list) {
         throw new QuireError(`data validation for "${range}" needs a list or a range reference`)
       }
+    } else if (rule.type === 'custom') {
+      if (!rule.formula) {
+        throw new QuireError(`data validation for "${range}" needs a non-empty formula`)
+      }
     } else {
       const isBetween = rule.operator === 'between' || rule.operator === 'notBetween'
       const isPair = Array.isArray(rule.value)
@@ -213,19 +237,7 @@ class StreamingQuireWorksheet implements StreamingWorksheet {
 
   addConditionalFormat(range: string, rule: ConditionalFormatRule): this {
     validateNamedRangeTarget(range)
-    if (rule.type === 'colorScale' && rule.colors.length !== 2 && rule.colors.length !== 3) {
-      throw new QuireError(`colorScale for "${range}" needs 2 or 3 colours`)
-    }
-    if (rule.type === 'cellIs') {
-      const isBetween = rule.operator === 'between' || rule.operator === 'notBetween'
-      const isPair = Array.isArray(rule.formula)
-      if (isBetween && !isPair) {
-        throw new QuireError(`conditional format "${rule.operator}" for "${range}" needs a [min, max] formula`)
-      }
-      if (!isBetween && isPair) {
-        throw new QuireError(`conditional format "${rule.operator}" for "${range}" takes a single formula, not a pair`)
-      }
-    }
+    validateConditionalFormatRule(range, rule)
     this.conditionalFormats.push({ range, rule })
     return this
   }
@@ -253,9 +265,15 @@ class StreamingQuireWorksheet implements StreamingWorksheet {
     return this.pageSetup?.printArea
   }
 
+  protect(options: SheetProtectionOptions = {}): this {
+    this.protection = options
+    return this
+  }
+
   addRow(values: CellInput[], options: AddRowOptions = {}): this {
     if (this.finished) throw new QuireError(`worksheet "${this.name}" has already been finished`)
     if (!Array.isArray(values)) throw new QuireError('addRow expects an array of values')
+    validateOutlineLevel(options.outlineLevel)
     this.ensureHeader()
 
     const r = this.nextRow++
@@ -293,6 +311,8 @@ class StreamingQuireWorksheet implements StreamingWorksheet {
 
     const attrs = [`r="${r}"`]
     if (options.height != null) attrs.push(`ht="${options.height}"`, 'customHeight="1"')
+    if (options.hidden) attrs.push('hidden="1"')
+    if (options.outlineLevel) attrs.push(`outlineLevel="${options.outlineLevel}"`)
     if (rowStyle && !isEmptyStyle(rowStyle)) {
       attrs.push(`s="${this.pool.intern(rowStyle)}"`, 'customFormat="1"')
     }
@@ -303,7 +323,7 @@ class StreamingQuireWorksheet implements StreamingWorksheet {
   private ensureHeader(): void {
     if (this.headerWritten) return
     this.headerWritten = true
-    const { sheetPr } = pageSetupXmlOf(this.pageSetup)
+    const sheetPr = sheetPrXmlOf(this.pageSetup, this.outline)
     const header =
       `${XML_DECLARATION}\n<worksheet xmlns="${NS_MAIN}" xmlns:r="${NS_R}">` +
       (sheetPr ?? '') +
@@ -327,6 +347,7 @@ class StreamingQuireWorksheet implements StreamingWorksheet {
 
     const tail =
       '</sheetData>' +
+      (sheetProtectionXmlOf(this.protection) ?? '') +
       (this.filterRange ? `<autoFilter ref="${this.filterRange}"/>` : '') +
       (this.merges.length
         ? `<mergeCells count="${this.merges.length}">${this.merges
@@ -354,6 +375,7 @@ class StreamingQuireWorkbook implements StreamingWorkbook {
   private sheets: StreamingQuireWorksheet[] = []
   private definedNames: DefinedNameEntry[] = []
   private definedNameKeys = new Set<string>()
+  private protection: WorkbookProtectionOptions | null = null
   private sst = new SharedStrings()
   private pool = new StylePool()
   private chunks: Uint8Array[] = []
@@ -375,14 +397,26 @@ class StreamingQuireWorkbook implements StreamingWorkbook {
     return sheet
   }
 
-  defineName(name: string, sheetName: string, range: string): this {
+  defineName(name: string, sheetName: string, range: string, options: DefineNameOptions = {}): this {
     validateDefinedName(name, this.definedNameKeys)
     if (!this.sheets.some((s) => s.name === sheetName)) {
       throw new QuireError(`defineName: no worksheet named "${sheetName}"`)
     }
+    let localSheetId: number | undefined
+    if (options.scope !== undefined) {
+      localSheetId = this.sheets.findIndex((s) => s.name === options.scope)
+      if (localSheetId < 0) {
+        throw new QuireError(`defineName: no worksheet named "${options.scope}" to scope "${name}" to`)
+      }
+    }
     validateNamedRangeTarget(range)
     this.definedNameKeys.add(name.toLowerCase())
-    this.definedNames.push({ name, sheetName, range })
+    this.definedNames.push({ name, sheetName, range, localSheetId })
+    return this
+  }
+
+  protect(options: WorkbookProtectionOptions = {}): this {
+    this.protection = options
     return this
   }
 
@@ -418,6 +452,7 @@ class StreamingQuireWorkbook implements StreamingWorkbook {
         [],
         this.definedNames,
         this.sheets.map((s) => s.getPrintArea()),
+        workbookProtectionXmlOf(this.protection),
       ),
     )
     this.pushWholePart('xl/_rels/workbook.xml.rels', workbookRelsXml(this.sheets.length, hasStrings))

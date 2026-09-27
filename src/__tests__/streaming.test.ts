@@ -180,4 +180,28 @@ describe('createStreamingWorkbook — features', () => {
     s.addRow(['x'])
     expect(() => s.setPageSetup({ orientation: 'landscape' })).toThrow(/before the first addRow/)
   })
+
+  it('sheet.protect()/wb.protect() round-trip, and protect() can follow addRow', async () => {
+    const wb = createStreamingWorkbook()
+    const s = wb.addWorksheet('S')
+    s.addRow(['x'])
+    s.protect({ allowSort: true }) // allowed after addRow — renders into the tail, not the header
+    wb.protect({ lockWindows: true })
+    const bytes = await wb.finish()
+    const read = readWorkbook(bytes)
+    expect(read.protection).toEqual({ lockStructure: true, lockWindows: true })
+    expect(read.sheet('S')!.protection).toMatchObject({ allowSort: true, allowFormatCells: false })
+  })
+
+  it('row/column outline (grouping) round-trips', async () => {
+    const wb = createStreamingWorkbook()
+    const s = wb.addWorksheet('S', { outline: { summaryBelow: false } })
+    s.setColumn(1, { outlineLevel: 1 })
+    s.addRow(['a'])
+    s.addRow(['b'], { hidden: true, outlineLevel: 2 })
+    const bytes = await wb.finish()
+    const sheet = readWorkbook(bytes).sheet('S')!
+    expect(sheet.columnInfo.get(1)).toMatchObject({ outlineLevel: 1 })
+    expect(sheet.rowInfo.get(2)).toMatchObject({ hidden: true, outlineLevel: 2 })
+  })
 })

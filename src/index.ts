@@ -22,7 +22,12 @@ export type {
   DataValidationOptions,
   ValidationOperator,
   ConditionalFormatRule,
+  IconSetName,
   PageSetupOptions,
+  OutlineOptions,
+  DefineNameOptions,
+  SheetProtectionOptions,
+  WorkbookProtectionOptions,
   CommentOptions,
   AddRowOptions,
   RowOptions,
@@ -36,6 +41,7 @@ export type {
   BorderEdge,
   BorderStyle,
   BorderStyleInput,
+  ProtectionStyle,
 } from './style'
 
 // --- Reading (0.2.0) ---
@@ -59,6 +65,10 @@ export type {
   ReadConditionalFormat,
   ReadConditionalFormatRule,
   ReadPageSetup,
+  ReadColumnInfo,
+  ReadRowInfo,
+  ReadSheetProtection,
+  ReadWorkbookProtection,
   StreamRowsResult,
 } from './read'
 export { QuireError } from './errors'

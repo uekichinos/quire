@@ -71,11 +71,17 @@ export interface AddRowOptions {
   style?: CellStyle
   /** Row height in points. */
   height?: number
+  hidden?: boolean
+  /** Outline (grouping) level, `0`–`7`. */
+  outlineLevel?: number
 }
 
 export interface RowOptions {
   style?: CellStyle
   height?: number
+  hidden?: boolean
+  /** Outline (grouping) level, `0`–`7`. */
+  outlineLevel?: number
 }
 
 export interface ColumnSpec {
@@ -84,6 +90,16 @@ export interface ColumnSpec {
   hidden?: boolean
   /** Default style for the whole column (row and cell styles win over it). */
   style?: CellStyle
+  /** Outline (grouping) level, `0`–`7`. */
+  outlineLevel?: number
+}
+
+/** Which side the outline's summary row/column sits on. Both default to `true` (Excel's own default). */
+export interface OutlineOptions {
+  /** Summary row is below its detail rows, not above. */
+  summaryBelow?: boolean
+  /** Summary column is to the right of its detail columns, not the left. */
+  summaryRight?: boolean
 }
 
 export interface FreezeOptions {
@@ -99,6 +115,56 @@ export interface WorksheetOptions {
   freeze?: FreezeOptions
   /** Range for the filter dropdowns, e.g. `'A1:E1'`. */
   autoFilter?: string
+  /** Direction of row/column outline (grouping) summaries. */
+  outline?: OutlineOptions
+}
+
+export interface DefineNameOptions {
+  /** Limits visibility to this sheet instead of the whole workbook. Must already exist. */
+  scope?: string
+}
+
+/**
+ * Structural sheet protection — what's allowed once the sheet is protected. Cell-level
+ * `locked`/`hidden` (via `CellStyle.protection`) decide which cells that applies to; every
+ * cell is implicitly locked until styled otherwise. No password support: Excel's legacy
+ * password hash needs to be bit-exact and can't be verified against a real Excel instance
+ * in this environment, so protection here is structural-only.
+ */
+export interface SheetProtectionOptions {
+  /** Selecting locked cells. Default `true` (Excel's own default). */
+  allowSelectLockedCells?: boolean
+  /** Selecting unlocked cells. Default `true`. */
+  allowSelectUnlockedCells?: boolean
+  /** Formatting cells. Default `false`. */
+  allowFormatCells?: boolean
+  /** Formatting columns (width, hide/unhide). Default `false`. */
+  allowFormatColumns?: boolean
+  /** Formatting rows (height, hide/unhide). Default `false`. */
+  allowFormatRows?: boolean
+  /** Inserting columns. Default `false`. */
+  allowInsertColumns?: boolean
+  /** Inserting rows. Default `false`. */
+  allowInsertRows?: boolean
+  /** Deleting columns. Default `false`. */
+  allowDeleteColumns?: boolean
+  /** Deleting rows. Default `false`. */
+  allowDeleteRows?: boolean
+  /** Sorting. Default `false`. */
+  allowSort?: boolean
+  /** Using the autofilter dropdowns. Default `false`. */
+  allowAutoFilter?: boolean
+}
+
+/**
+ * Structural workbook protection — locks the sheet list and/or the workbook window. No
+ * password support (see {@link SheetProtectionOptions}).
+ */
+export interface WorkbookProtectionOptions {
+  /** Locks the sheet structure (add/remove/rename/reorder/hide/unhide sheets). Default `true` — Excel's own default once workbook protection is turned on. */
+  lockStructure?: boolean
+  /** Locks the workbook window's size/position. Default `false`. */
+  lockWindows?: boolean
 }
 
 export interface PageSetupOptions {
@@ -136,6 +202,17 @@ export type DataValidationRule =
     }
   | { type: 'whole' | 'decimal' | 'textLength'; operator: ValidationOperator; value: number | [number, number] }
   | { type: 'date'; operator: ValidationOperator; value: Date | [Date, Date] }
+  | {
+      type: 'time'
+      operator: ValidationOperator
+      /** `'HH:MM'` or `'HH:MM:SS'`, or a pair for `between`/`notBetween`. */
+      value: string | [string, string]
+    }
+  | {
+      type: 'custom'
+      /** An Excel formula (without `=`) that must evaluate truthy for the cell to be valid. */
+      formula: string
+    }
 
 export interface DataValidationOptions {
   /** Allow the cell to be left empty. Default `true`. */
@@ -170,6 +247,42 @@ export type ConditionalFormatRule =
       /** Bar colour; length scales between the range's own min and max. */
       color: string
     }
+  | {
+      type: 'iconSet'
+      /** Standard Excel icon-set name; thresholds are evenly-spaced percentiles. */
+      iconSet: IconSetName
+    }
+  | {
+      type: 'top10'
+      /** How many (or, with `percent`, what percentage of) cells to highlight. */
+      rank: number
+      /** Interpret `rank` as a percentage instead of a count. Default `false`. */
+      percent?: boolean
+      /** Highlight the bottom instead of the top. Default `false`. */
+      bottom?: boolean
+      /** Formatting applied to matching cells. */
+      style: { font?: Pick<FontStyle, 'bold' | 'italic' | 'color'>; fill?: string }
+    }
+
+/** Standard Excel icon-set names (`ST_IconSetType`). */
+export type IconSetName =
+  | '3Arrows'
+  | '3ArrowsGray'
+  | '3Flags'
+  | '3TrafficLights1'
+  | '3TrafficLights2'
+  | '3Signs'
+  | '3Symbols'
+  | '3Symbols2'
+  | '4Arrows'
+  | '4ArrowsGray'
+  | '4RedToBlack'
+  | '4Rating'
+  | '4TrafficLights'
+  | '5Arrows'
+  | '5ArrowsGray'
+  | '5Rating'
+  | '5Quarters'
 
 const XLSX_MIME = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
 const INVALID_NAME_CHARS = /[\\/?*[\]:]/
@@ -234,6 +347,31 @@ export function validateNamedRangeTarget(range: string): void {
   else parseRef(range)
 }
 
+export function validateConditionalFormatRule(range: string, rule: ConditionalFormatRule): void {
+  if (rule.type === 'colorScale' && rule.colors.length !== 2 && rule.colors.length !== 3) {
+    throw new QuireError(`colorScale for "${range}" needs 2 or 3 colours`)
+  }
+  if (rule.type === 'cellIs') {
+    const isBetween = rule.operator === 'between' || rule.operator === 'notBetween'
+    const isPair = Array.isArray(rule.formula)
+    if (isBetween && !isPair) {
+      throw new QuireError(`conditional format "${rule.operator}" for "${range}" needs a [min, max] formula`)
+    }
+    if (!isBetween && isPair) {
+      throw new QuireError(`conditional format "${rule.operator}" for "${range}" takes a single formula, not a pair`)
+    }
+  }
+  if (rule.type === 'top10' && (!Number.isInteger(rule.rank) || rule.rank < 1 || (rule.percent && rule.rank > 100))) {
+    throw new QuireError(`top10 rank for "${range}" must be a positive integer (and ≤100 when percent is set)`)
+  }
+}
+
+export function validateOutlineLevel(level: number | undefined): void {
+  if (level != null && (!Number.isInteger(level) || level < 0 || level > 7)) {
+    throw new QuireError('outlineLevel must be an integer between 0 and 7')
+  }
+}
+
 export function validatePageSetup(options: PageSetupOptions): void {
   if (options.printArea) validateNamedRangeTarget(options.printArea)
   if (options.fitToWidth != null && (!Number.isInteger(options.fitToWidth) || options.fitToWidth < 0)) {
@@ -251,9 +389,23 @@ export function validatePageSetup(options: PageSetupOptions): void {
 }
 
 /** `formula1`/`formula2` text for a validation rule — dates become their Excel serial. */
+/** `'HH:MM'` / `'HH:MM:SS'` → fraction of a day (`13:30` → `0.5625`), Excel's time-serial form. */
+export function timeToFraction(time: string): number {
+  const m = /^([0-9]{1,2}):([0-9]{2})(?::([0-9]{2}(?:\.[0-9]+)?))?$/.exec(time.trim())
+  if (!m) throw new QuireError(`invalid time "${time}" (expected "HH:MM" or "HH:MM:SS")`)
+  const [, h, mins, secs] = m
+  const totalSeconds = Number(h) * 3600 + Number(mins) * 60 + Number(secs ?? 0)
+  return totalSeconds / 86400
+}
+
 export function renderValidationFormulas(rule: DataValidationRule): string[] {
   if (rule.type === 'list') {
     return [Array.isArray(rule.list) ? `"${rule.list.join(',')}"` : rule.list]
+  }
+  if (rule.type === 'custom') return [rule.formula]
+  if (rule.type === 'time') {
+    const toFormula = (v: string): string => numToXml(timeToFraction(v))
+    return Array.isArray(rule.value) ? rule.value.map(toFormula) : [toFormula(rule.value)]
   }
   const toFormula = (v: number | Date): string =>
     numToXml(v instanceof Date ? dateToSerial(v) : v)
@@ -333,6 +485,11 @@ export interface Worksheet {
   addConditionalFormat(range: string, rule: ConditionalFormatRule): this
   /** Page orientation, paper size, fit-to-page/scale, margins, and print area. Chainable. */
   setPageSetup(options: PageSetupOptions): this
+  /**
+   * Protect the sheet structurally (no password — see {@link SheetProtectionOptions}). Cells
+   * are locked by default; use `CellStyle.protection` to unlock specific ones. Chainable.
+   */
+  protect(options?: SheetProtectionOptions): this
 }
 
 class QuireWorksheet implements Worksheet {
@@ -350,6 +507,8 @@ class QuireWorksheet implements Worksheet {
   private validations: { range: string; rule: DataValidationRule; options: DataValidationOptions }[] = []
   private conditionalFormats: { range: string; rule: ConditionalFormatRule }[] = []
   private pageSetup: PageSetupOptions | null = null
+  private outline: OutlineOptions | undefined
+  private protection: SheetProtectionOptions | null = null
   private comments = new Map<string, { text: string; author: string }>()
   // Rebuilt fresh in serialize(): the sheet's single _rels/sheetN.xml.rels file
   // (hyperlinks + comments/vml, if any) and the legacyDrawing reference to it.
@@ -365,6 +524,7 @@ class QuireWorksheet implements Worksheet {
     options.columns?.forEach((spec, i) => this.setColumn(i + 1, spec))
     if (options.freeze) this.freeze(options.freeze)
     if (options.autoFilter) this.autoFilter(options.autoFilter)
+    this.outline = options.outline
   }
 
   addRow(values: CellInput[], options: AddRowOptions = {}): this {
@@ -372,8 +532,13 @@ class QuireWorksheet implements Worksheet {
       throw new QuireError('addRow expects an array of values')
     }
     const r = this.nextRow++
-    if (options.style || options.height != null) {
-      this.setRow(r, { style: options.style, height: options.height })
+    if (options.style || options.height != null || options.hidden != null || options.outlineLevel != null) {
+      this.setRow(r, {
+        style: options.style,
+        height: options.height,
+        hidden: options.hidden,
+        outlineLevel: options.outlineLevel,
+      })
     }
     values.forEach((input, i) => {
       if (isStyledCell(input)) this.put(r, i + 1, input.value, input.style)
@@ -396,9 +561,12 @@ class QuireWorksheet implements Worksheet {
     if (options.height != null && !(options.height > 0)) {
       throw new QuireError('row height must be a positive number')
     }
+    validateOutlineLevel(options.outlineLevel)
     const meta: RowOptions = { ...this.rowMeta.get(row) }
     if (options.style && !isEmptyStyle(options.style)) meta.style = options.style
     if (options.height != null) meta.height = options.height
+    if (options.hidden != null) meta.hidden = options.hidden
+    if (options.outlineLevel != null) meta.outlineLevel = options.outlineLevel
     this.rowMeta.set(row, meta)
     this.nextRow = Math.max(this.nextRow, row + 1)
     return this
@@ -411,6 +579,7 @@ class QuireWorksheet implements Worksheet {
     if (spec.width != null && !(spec.width >= 0)) {
       throw new QuireError('column width must be a non-negative number')
     }
+    validateOutlineLevel(spec.outlineLevel)
     this.columns.set(index, { ...this.columns.get(index), ...spec })
     return this
   }
@@ -466,6 +635,11 @@ class QuireWorksheet implements Worksheet {
     return this.pageSetup?.printArea
   }
 
+  protect(options: SheetProtectionOptions = {}): this {
+    this.protection = options
+    return this
+  }
+
   setDataValidation(
     range: string,
     rule: DataValidationRule,
@@ -490,6 +664,10 @@ class QuireWorksheet implements Worksheet {
       } else if (!rule.list) {
         throw new QuireError(`data validation for "${range}" needs a list or a range reference`)
       }
+    } else if (rule.type === 'custom') {
+      if (!rule.formula) {
+        throw new QuireError(`data validation for "${range}" needs a non-empty formula`)
+      }
     } else {
       const isBetween = rule.operator === 'between' || rule.operator === 'notBetween'
       const isPair = Array.isArray(rule.value)
@@ -506,19 +684,7 @@ class QuireWorksheet implements Worksheet {
 
   addConditionalFormat(range: string, rule: ConditionalFormatRule): this {
     validateNamedRangeTarget(range)
-    if (rule.type === 'colorScale' && rule.colors.length !== 2 && rule.colors.length !== 3) {
-      throw new QuireError(`colorScale for "${range}" needs 2 or 3 colours`)
-    }
-    if (rule.type === 'cellIs') {
-      const isBetween = rule.operator === 'between' || rule.operator === 'notBetween'
-      const isPair = Array.isArray(rule.formula)
-      if (isBetween && !isPair) {
-        throw new QuireError(`conditional format "${rule.operator}" for "${range}" needs a [min, max] formula`)
-      }
-      if (!isBetween && isPair) {
-        throw new QuireError(`conditional format "${rule.operator}" for "${range}" takes a single formula, not a pair`)
-      }
-    }
+    validateConditionalFormatRule(range, rule)
     this.conditionalFormats.push({ range, rule })
     return this
   }
@@ -603,6 +769,8 @@ class QuireWorksheet implements Worksheet {
           : ''
         const attrs = [`r="${r}"`]
         if (meta?.height != null) attrs.push(`ht="${meta.height}"`, 'customHeight="1"')
+        if (meta?.hidden) attrs.push('hidden="1"')
+        if (meta?.outlineLevel) attrs.push(`outlineLevel="${meta.outlineLevel}"`)
         // Also carried on the row itself (not just baked into each cell's own `s`) so
         // cells with no `<c>` element at all still show the row's default style.
         if (rowStyle && !isEmptyStyle(rowStyle)) {
@@ -614,7 +782,8 @@ class QuireWorksheet implements Worksheet {
 
     const { hyperlinksXml, legacyDrawing } = this.buildRelsAndRefs(sheetIndex)
 
-    const { sheetPr, pageMargins, pageSetup } = pageSetupXmlOf(this.pageSetup)
+    const sheetPr = sheetPrXmlOf(this.pageSetup, this.outline)
+    const { pageMargins, pageSetup } = pageSetupXmlOf(this.pageSetup)
 
     return worksheetXml({
       sheetPr,
@@ -622,6 +791,7 @@ class QuireWorksheet implements Worksheet {
       sheetViews: this.frozen ? sheetViewsXml(this.frozen) : undefined,
       cols: this.colsXml(),
       rows,
+      sheetProtection: sheetProtectionXmlOf(this.protection),
       autoFilter: this.filterRange ? `<autoFilter ref="${this.filterRange}"/>` : undefined,
       mergeCells: this.merges.length
         ? `<mergeCells count="${this.merges.length}">` +
@@ -685,6 +855,7 @@ export function colsXmlOf(columns: Map<number, ColumnSpec>, pool: StylePool): st
       const attrs = [`min="${idx}"`, `max="${idx}"`]
       if (spec.width != null) attrs.push(`width="${spec.width}"`, 'customWidth="1"')
       if (spec.hidden) attrs.push('hidden="1"')
+      if (spec.outlineLevel) attrs.push(`outlineLevel="${spec.outlineLevel}"`)
       if (spec.style && !isEmptyStyle(spec.style)) {
         attrs.push(`style="${pool.intern(spec.style)}"`)
       }
@@ -751,7 +922,7 @@ export function dataValidationsXmlOf(
   const items = validations.map(({ range, rule, options }) => {
     const attrs =
       `type="${rule.type}" allowBlank="${options.allowBlank === false ? 0 : 1}"` +
-      (rule.type === 'list' ? '' : attr('operator', rule.operator)) +
+      (rule.type === 'list' || rule.type === 'custom' ? '' : attr('operator', rule.operator)) +
       ' showInputMessage="1" showErrorMessage="1"' +
       attr('sqref', range) +
       attr('promptTitle', options.promptTitle) +
@@ -775,13 +946,8 @@ const DEFAULT_MARGINS = { left: 0.7, right: 0.7, top: 0.75, bottom: 0.75, header
  */
 export function pageSetupXmlOf(
   setup: PageSetupOptions | null,
-): { sheetPr?: string; pageMargins?: string; pageSetup?: string } {
+): { pageMargins?: string; pageSetup?: string } {
   if (!setup) return {}
-  const sheetPr =
-    setup.fitToWidth != null || setup.fitToHeight != null
-      ? '<sheetPr><pageSetUpPr fitToPage="1"/></sheetPr>'
-      : undefined
-
   const m = { ...DEFAULT_MARGINS, ...setup.margins }
   const pageMargins =
     `<pageMargins left="${m.left}" right="${m.right}" top="${m.top}" bottom="${m.bottom}"` +
@@ -797,7 +963,62 @@ export function pageSetupXmlOf(
       : '')
   const pageSetup = psAttrs ? `<pageSetup${psAttrs}/>` : undefined
 
-  return { sheetPr, pageMargins, pageSetup }
+  return { pageMargins, pageSetup }
+}
+
+/**
+ * Renders `<sheetPr>` — the fit-to-page flag and/or the outline (grouping) direction —
+ * or `undefined` if neither is set. Must precede `<dimension>`. Shared with the streaming
+ * writer.
+ */
+export function sheetPrXmlOf(
+  pageSetup: PageSetupOptions | null,
+  outline: OutlineOptions | undefined,
+): string | undefined {
+  const outlinePr =
+    outline?.summaryBelow !== undefined || outline?.summaryRight !== undefined
+      ? `<outlinePr${outline.summaryBelow === false ? ' summaryBelow="0"' : ''}` +
+        `${outline.summaryRight === false ? ' summaryRight="0"' : ''}/>`
+      : ''
+  const pageSetUpPr =
+    pageSetup && (pageSetup.fitToWidth != null || pageSetup.fitToHeight != null)
+      ? '<pageSetUpPr fitToPage="1"/>'
+      : ''
+  const inner = outlinePr + pageSetUpPr
+  return inner ? `<sheetPr>${inner}</sheetPr>` : undefined
+}
+
+/**
+ * Renders `<sheetProtection>`, or `undefined` if the sheet isn't protected. Must follow
+ * `</sheetData>` and precede `<autoFilter>`. Shared with the streaming writer.
+ */
+export function sheetProtectionXmlOf(options: SheetProtectionOptions | null): string | undefined {
+  if (!options) return undefined
+  const attrs = ['sheet="1"']
+  if (options.allowSelectLockedCells === false) attrs.push('selectLockedCells="1"')
+  if (options.allowSelectUnlockedCells === false) attrs.push('selectUnlockedCells="1"')
+  if (options.allowFormatCells) attrs.push('formatCells="0"')
+  if (options.allowFormatColumns) attrs.push('formatColumns="0"')
+  if (options.allowFormatRows) attrs.push('formatRows="0"')
+  if (options.allowInsertColumns) attrs.push('insertColumns="0"')
+  if (options.allowInsertRows) attrs.push('insertRows="0"')
+  if (options.allowDeleteColumns) attrs.push('deleteColumns="0"')
+  if (options.allowDeleteRows) attrs.push('deleteRows="0"')
+  if (options.allowSort) attrs.push('sort="0"')
+  if (options.allowAutoFilter) attrs.push('autoFilter="0"')
+  return `<sheetProtection ${attrs.join(' ')}/>`
+}
+
+/**
+ * Renders `<workbookProtection>`, or `undefined` if the workbook isn't protected. Must
+ * precede `<sheets>`. Shared with the streaming writer.
+ */
+export function workbookProtectionXmlOf(options: WorkbookProtectionOptions | null): string | undefined {
+  if (!options) return undefined
+  const attrs: string[] = []
+  if (options.lockStructure ?? true) attrs.push('lockStructure="1"')
+  if (options.lockWindows) attrs.push('lockWindows="1"')
+  return `<workbookProtection${attrs.length ? ' ' + attrs.join(' ') : ''}/>`
 }
 
 /** Renders one or more `<conditionalFormatting>` blocks. Shared with the streaming writer. */
@@ -828,12 +1049,34 @@ export function conditionalFormatsXmlOf(
         `</conditionalFormatting>`
       )
     }
-    return (
-      `<conditionalFormatting${attr('sqref', range)}>` +
-      `<cfRule type="dataBar" priority="${priority}"><dataBar>` +
-      `<cfvo type="min"/><cfvo type="max"/><color rgb="${toArgb(rule.color)}"/>` +
-      `</dataBar></cfRule></conditionalFormatting>`
-    )
+    if (rule.type === 'dataBar') {
+      return (
+        `<conditionalFormatting${attr('sqref', range)}>` +
+        `<cfRule type="dataBar" priority="${priority}"><dataBar>` +
+        `<cfvo type="min"/><cfvo type="max"/><color rgb="${toArgb(rule.color)}"/>` +
+        `</dataBar></cfRule></conditionalFormatting>`
+      )
+    }
+    if (rule.type === 'iconSet') {
+      const n = Number(rule.iconSet[0])
+      const step = 100 / n
+      const cfvoXml = Array.from(
+        { length: n },
+        (_, i) => `<cfvo type="percent" val="${Math.round(i * step)}"/>`,
+      ).join('')
+      return (
+        `<conditionalFormatting${attr('sqref', range)}>` +
+        `<cfRule type="iconSet" priority="${priority}"><iconSet iconSet="${rule.iconSet}">` +
+        `${cfvoXml}</iconSet></cfRule></conditionalFormatting>`
+      )
+    }
+    // top10
+    const dxfId = pool.internDxf(rule.style)
+    const attrs =
+      `type="top10" dxfId="${dxfId}" priority="${priority}" rank="${rule.rank}"` +
+      (rule.percent ? ' percent="1"' : '') +
+      (rule.bottom ? ' bottom="1"' : '')
+    return `<conditionalFormatting${attr('sqref', range)}><cfRule ${attrs}/></conditionalFormatting>`
   })
   return items.join('')
 }
@@ -928,11 +1171,19 @@ export interface Workbook {
   /** Add a worksheet. Names: 1–31 chars, unique (case-insensitive), no `\ / ? * [ ] :`. */
   addWorksheet(name: string, options?: WorksheetOptions): Worksheet
   /**
-   * Define a workbook-scoped named range, e.g. `wb.defineName('SalesRange', 'Sales', 'A1:B10')`.
-   * `sheetName` must already have been added. Names follow Excel's identifier rules
-   * (letters/digits/`_`/`.`, can't look like a cell reference) and must be unique.
+   * Define a named range, e.g. `wb.defineName('SalesRange', 'Sales', 'A1:B10')`. `sheetName`
+   * must already have been added. Names follow Excel's identifier rules (letters/digits/`_`/
+   * `.`, can't look like a cell reference) and must be unique. Workbook-scoped (visible
+   * everywhere) by default; pass `{ scope: 'SheetName' }` to limit visibility to one sheet
+   * (which must also already exist) — Excel then requires the sheet-qualified form
+   * (`SheetName!SalesRange`) from any other sheet.
    */
-  defineName(name: string, sheetName: string, range: string): this
+  defineName(name: string, sheetName: string, range: string, options?: DefineNameOptions): this
+  /**
+   * Protect the workbook structurally — locks the sheet list and/or window (no password —
+   * see {@link WorkbookProtectionOptions}). Chainable.
+   */
+  protect(options?: WorkbookProtectionOptions): this
   /** Serialise to an in-memory `.xlsx` byte array. */
   xlsx(): Uint8Array
   /** Serialise to a `Blob` (browser convenience). */
@@ -943,6 +1194,7 @@ class QuireWorkbook implements Workbook {
   private sheets: QuireWorksheet[] = []
   private definedNames: DefinedNameEntry[] = []
   private definedNameKeys = new Set<string>()
+  private protection: WorkbookProtectionOptions | null = null
 
   addWorksheet(name: string, options: WorksheetOptions = {}): Worksheet {
     validateSheetName(
@@ -954,14 +1206,26 @@ class QuireWorkbook implements Workbook {
     return sheet
   }
 
-  defineName(name: string, sheetName: string, range: string): this {
+  defineName(name: string, sheetName: string, range: string, options: DefineNameOptions = {}): this {
     validateDefinedName(name, this.definedNameKeys)
     if (!this.sheets.some((s) => s.name === sheetName)) {
       throw new QuireError(`defineName: no worksheet named "${sheetName}"`)
     }
+    let localSheetId: number | undefined
+    if (options.scope !== undefined) {
+      localSheetId = this.sheets.findIndex((s) => s.name === options.scope)
+      if (localSheetId < 0) {
+        throw new QuireError(`defineName: no worksheet named "${options.scope}" to scope "${name}" to`)
+      }
+    }
     validateNamedRangeTarget(range)
     this.definedNameKeys.add(name.toLowerCase())
-    this.definedNames.push({ name, sheetName, range })
+    this.definedNames.push({ name, sheetName, range, localSheetId })
+    return this
+  }
+
+  protect(options: WorkbookProtectionOptions = {}): this {
+    this.protection = options
     return this
   }
 
@@ -992,6 +1256,7 @@ class QuireWorkbook implements Workbook {
         this.sheets.map((s) => s.getFilterRange()),
         this.definedNames,
         this.sheets.map((s) => s.getPrintArea()),
+        workbookProtectionXmlOf(this.protection),
       ),
       'xl/_rels/workbook.xml.rels': workbookRelsXml(this.sheets.length, hasStrings),
       'xl/styles.xml': pool.toXml(),

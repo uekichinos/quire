@@ -25,6 +25,7 @@ interface ResolvedXf {
   fillId: number
   borderId: number
   align?: ResolvedAlign
+  protection?: { locked?: boolean; hidden?: boolean }
 }
 
 const V_MAP: Record<string, string> = { top: 'top', middle: 'center', bottom: 'bottom' }
@@ -88,12 +89,19 @@ export class StylePool {
     const fillId = this.resolveFill(style?.fill)
     const borderId = this.resolveBorder(style?.border)
     const align = this.resolveAlign(style?.align)
+    // Only carried when it differs from Excel's own xf default (locked, not hidden).
+    const protection =
+      style?.protection?.locked === false || style?.protection?.hidden === true
+        ? { locked: style.protection.locked, hidden: style.protection.hidden }
+        : undefined
 
-    const key = `${numFmtId}|${fontId}|${fillId}|${borderId}|${align ? alignKey(align) : ''}`
+    const key =
+      `${numFmtId}|${fontId}|${fillId}|${borderId}|${align ? alignKey(align) : ''}` +
+      `|${protection ? `${protection.locked}~${protection.hidden}` : ''}`
     let idx = this.xfByKey.get(key)
     if (idx === undefined) {
       idx = this.xfs.length
-      this.xfs.push({ numFmtId, fontId, fillId, borderId, align })
+      this.xfs.push({ numFmtId, fontId, fillId, borderId, align, protection })
       this.xfByKey.set(key, idx)
     }
     return idx
@@ -263,15 +271,25 @@ function renderXf(xf: ResolvedXf): string {
   if (xf.fillId !== 0) attrs.push('applyFill="1"')
   if (xf.borderId !== 0) attrs.push('applyBorder="1"')
   if (xf.align) attrs.push('applyAlignment="1"')
+  if (xf.protection) attrs.push('applyProtection="1"')
 
-  if (!xf.align) return `<xf ${attrs.join(' ')}/>`
+  let children = ''
+  if (xf.align) {
+    const a: string[] = []
+    if (xf.align.horizontal) a.push(`horizontal="${xf.align.horizontal}"`)
+    if (xf.align.vertical) a.push(`vertical="${xf.align.vertical}"`)
+    if (xf.align.wrapText) a.push('wrapText="1"')
+    if (xf.align.indent) a.push(`indent="${xf.align.indent}"`)
+    children += `<alignment ${a.join(' ')}/>`
+  }
+  if (xf.protection) {
+    const p: string[] = []
+    if (xf.protection.locked === false) p.push('locked="0"')
+    if (xf.protection.hidden === true) p.push('hidden="1"')
+    children += `<protection ${p.join(' ')}/>`
+  }
 
-  const a: string[] = []
-  if (xf.align.horizontal) a.push(`horizontal="${xf.align.horizontal}"`)
-  if (xf.align.vertical) a.push(`vertical="${xf.align.vertical}"`)
-  if (xf.align.wrapText) a.push('wrapText="1"')
-  if (xf.align.indent) a.push(`indent="${xf.align.indent}"`)
-  return `<xf ${attrs.join(' ')}><alignment ${a.join(' ')}/></xf>`
+  return children ? `<xf ${attrs.join(' ')}>${children}</xf>` : `<xf ${attrs.join(' ')}/>`
 }
 
 function alignKey(a: ResolvedAlign): string {

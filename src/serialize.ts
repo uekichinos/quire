@@ -183,6 +183,8 @@ export interface DefinedNameEntry {
   name: string
   sheetName: string
   range: string
+  /** Sheet index this name is scoped to, or `undefined` for workbook-scoped. */
+  localSheetId?: number
 }
 
 export function workbookXml(
@@ -190,6 +192,7 @@ export function workbookXml(
   filterRanges: readonly (string | undefined)[] = [],
   definedNames: readonly DefinedNameEntry[] = [],
   printAreas: readonly (string | undefined)[] = [],
+  workbookProtection?: string,
 ): string {
   const sheets = sheetNames
     .map(
@@ -219,7 +222,7 @@ export function workbookXml(
   const userNames = definedNames
     .map(
       (d) =>
-        `<definedName${attr('name', d.name)}>` +
+        `<definedName${attr('name', d.name)}${attr('localSheetId', d.localSheetId)}>` +
         `${escapeText(absoluteSheetRange(d.sheetName, d.range))}</definedName>`,
     )
     .join('')
@@ -228,6 +231,7 @@ export function workbookXml(
 
   return (
     `${XML_DECLARATION}\n<workbook xmlns="${NS_MAIN}" xmlns:r="${NS_R}">` +
+    (workbookProtection ?? '') +
     `<sheets>${sheets}</sheets>` +
     (allNames ? `<definedNames>${allNames}</definedNames>` : '') +
     `<calcPr calcId="0" fullCalcOnLoad="1"/>` +
@@ -283,6 +287,8 @@ export interface WorksheetSections {
   cols?: string
   /** The `<row>…` body that goes inside `<sheetData>`. */
   rows: string
+  /** `<sheetProtection .../>` — must follow `</sheetData>` and precede `<autoFilter>`, or omitted. */
+  sheetProtection?: string
   /** `<autoFilter ref="…"/>`, or omitted. */
   autoFilter?: string
   /** Full `<mergeCells>…</mergeCells>`, or omitted. */
@@ -303,9 +309,9 @@ export interface WorksheetSections {
 
 /**
  * Assembles a worksheet part. Child order follows the CT_Worksheet schema:
- * `sheetPr → dimension → sheetViews → cols → sheetData → autoFilter → mergeCells →
- * conditionalFormatting → dataValidations → hyperlinks → pageMargins → pageSetup →
- * legacyDrawing`.
+ * `sheetPr → dimension → sheetViews → cols → sheetData → sheetProtection → autoFilter →
+ * mergeCells → conditionalFormatting → dataValidations → hyperlinks → pageMargins →
+ * pageSetup → legacyDrawing`.
  */
 export function worksheetXml(s: WorksheetSections): string {
   return (
@@ -315,6 +321,7 @@ export function worksheetXml(s: WorksheetSections): string {
     (s.sheetViews ?? '') +
     (s.cols ?? '') +
     `<sheetData>${s.rows}</sheetData>` +
+    (s.sheetProtection ?? '') +
     (s.autoFilter ?? '') +
     (s.mergeCells ?? '') +
     (s.conditionalFormatting ?? '') +
