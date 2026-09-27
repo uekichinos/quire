@@ -2,7 +2,11 @@
 
 All notable changes to `@uekichinos/quire` are documented here.
 
-## [Unreleased]
+## [0.5.0] - 2026-09-27
+
+Data validation, rich text, comments, conditional formatting, print setup,
+and a streaming writer + reader for very large sheets. Still **one runtime
+dependency** (`fflate`).
 
 ### Streaming reader
 - `readRows(bytes, sheetNameOrIndex, onRow, options?)` — streams one sheet's
