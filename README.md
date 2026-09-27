@@ -5,12 +5,17 @@
 A small, dependency-light `.xlsx` **reader + writer** for Node and the browser.
 
 - **One runtime dependency** — [`fflate`](https://github.com/101arrowz/fflate) for zip packaging
-- **Write:** worksheets · typed cells (string / number / boolean / `Date` / formula) ·
-  a de-duplicated style pool · merged cells · column widths · freeze panes ·
-  auto-filter · row heights. Deterministic `Uint8Array` / `Blob` output
-- **Read:** values, dates, formulas (+ cached result), merges — via an in-house
-  strict XML tokenizer, not a dependency, so the DOCTYPE / entity-expansion
-  class behind most XML-parser CVEs doesn't apply
+- **Write:** worksheets · typed cells (string / number / boolean / `Date` / formula /
+  hyperlink / rich text) · a de-duplicated style pool · merged cells · column widths ·
+  freeze panes · auto-filter · row heights · data validation · conditional formatting
+  (highlight rules, colour scales, data bars) · comments · print setup (orientation,
+  fit-to-page, margins, print area). Deterministic `Uint8Array` / `Blob` output, plus a
+  low-memory [streaming writer](#streaming-writer) for very large sheets
+- **Read:** values, dates, formulas (+ cached result), merges, hyperlinks, comments,
+  rich text, data validation, conditional formatting, print setup — via an in-house
+  strict XML tokenizer, not a dependency, so the DOCTYPE / entity-expansion class
+  behind most XML-parser CVEs doesn't apply. A [`readRows`](#streaming-reader) mode
+  streams a sheet row-by-row for lower peak memory on large files
 - Identical in Node and the browser
 
 ## Install
@@ -85,11 +90,15 @@ const url = URL.createObjectURL(wb.blob())
 | `merge(range)` | `'A1:C1'`; rejects single-cell / backwards / overlapping |
 | `freeze({ xSplit?, ySplit? })` | frozen panes; `freeze({})` clears |
 | `autoFilter(range)` | header filter dropdowns |
+| `setDataValidation(range, rule, options?)` | dropdown, or a numeric/date/text-length rule |
+| `addConditionalFormat(range, rule)` | highlight matching cells, a colour scale, or a data bar |
+| `setComment(ref, text, { author? })` | a cell comment/note, independent of the cell's value |
+| `setPageSetup(options)` | orientation, paper size, fit-to-page/scale, margins, print area |
 
 **Cell values:** `string · number · boolean · Date · { formula, result? } ·
-{ hyperlink, text?, tooltip? } · null`. Dates use the 1900 serial system
-(default format `yyyy-mm-dd`). `null` / `undefined` cells are skipped but keep
-column position. Non-finite numbers and pre-1900 dates throw.
+{ hyperlink, text?, tooltip? } · RichTextRun[] · null`. Dates use the 1900
+serial system (default format `yyyy-mm-dd`). `null` / `undefined` cells are
+skipped but keep column position. Non-finite numbers and pre-1900 dates throw.
 
 **Hyperlinks:** `{ hyperlink: 'https://…', text?, tooltip? }` as a cell value —
 `text` (defaults to the URL itself) becomes the cell's string, `hyperlink` any
@@ -108,6 +117,78 @@ digits, `_` or `.`; can't read as a cell reference; can't use the reserved
 style })` now also mark the row/column itself with that default style (not
 just each populated cell), so empty cells in a styled row or column show the
 right formatting in Excel too.
+
+**Rich text:** a cell value can be `RichTextRun[]` — `[{ text, font? }, …]` —
+for multiple differently-formatted spans in one string, e.g. a bold word
+mid-sentence. `font` is a subset of `CellStyle.font` (`name`, `size`, `bold`,
+`italic`, `underline`, `color`) applied per run; the cell's own style (fill,
+border, align, numFmt) still applies normally. Must have at least one run.
+
+**Data validation:** `sheet.setDataValidation(range, rule, options?)` restricts
+a range to one rule:
+
+```js
+// dropdown from fixed choices, or a range reference
+sheet.setDataValidation('C2:C100', { type: 'list', list: ['Open', 'In Progress', 'Done'] })
+sheet.setDataValidation('D2:D100', { type: 'list', list: 'Lookup!$A$1:$A$5' })
+
+// numeric / date / text-length rules — `value` takes a pair for between/notBetween
+sheet.setDataValidation('E2:E100', { type: 'whole', operator: 'between', value: [0, 100] })
+sheet.setDataValidation('F2:F100', { type: 'date', operator: 'greaterThan', value: new Date(2024, 0, 1) })
+sheet.setDataValidation('G2:G100', { type: 'textLength', operator: 'lessThanOrEqual', value: 50 })
+
+// shared options (2nd arg for list, 3rd arg otherwise) — allowBlank, prompt/error text
+sheet.setDataValidation('C2:C100', { type: 'list', list: ['Open', 'Done'] }, {
+  promptTitle: 'Status', promptMessage: 'Pick one', allowBlank: false,
+})
+```
+For `list`, none of the fixed choices may contain a comma, and the joined list
+must fit Excel's 255-character limit. For the other types, `operator` is one
+of `between · notBetween · equal · notEqual · greaterThan · lessThan ·
+greaterThanOrEqual · lessThanOrEqual`.
+
+**Conditional formatting:** `sheet.addConditionalFormat(range, rule)` — three
+rule kinds:
+
+```js
+// highlight cells matching a condition
+sheet.addConditionalFormat('B2:B100', {
+  type: 'cellIs',
+  operator: 'greaterThan',
+  formula: 100,
+  style: { font: { bold: true, color: 'FF0000' }, fill: 'FFF2CC' },
+})
+
+// 2- or 3-colour scale (thresholds are the range's own min/mid/max)
+sheet.addConditionalFormat('C2:C100', { type: 'colorScale', colors: ['FF0000', 'FFFF00', '00FF00'] })
+
+// data bar (length scales between the range's own min and max)
+sheet.addConditionalFormat('D2:D100', { type: 'dataBar', color: '638EC6' })
+```
+`cellIs` styling is limited to `font.bold`/`italic`/`color` and `fill` (Excel's
+differential-format record); `operator` takes the same set as data validation,
+with `formula` as a pair for `between`/`notBetween`.
+
+**Comments:** `sheet.setComment(ref, text, { author? })` attaches a note to a
+cell, independent of whatever value (or no value) is there. Uses the classic
+comment format (`xl/commentsN.xml` + a VML drawing for the indicator/popup),
+not modern threaded comments.
+
+**Print setup:** `sheet.setPageSetup(options)`:
+
+```js
+sheet.setPageSetup({
+  orientation: 'landscape',
+  paperSize: 9,              // Excel paper-size code — 9 = A4, 1 = Letter
+  fitToWidth: 1,              // fit to 1 page wide
+  fitToHeight: 0,              // any number of pages tall
+  margins: { left: 0.5 },     // inches; unset sides fall back to Excel's own defaults
+  printArea: 'A1:F50',
+})
+```
+`printArea` is written as the sheet's own `_xlnm.Print_Area` workbook-level
+defined name. In the **streaming writer**, `setPageSetup` must be called
+before that sheet's first `addRow()`, same as `setColumn`/`freeze`.
 
 **`CellStyle`:** `font` (`name`, `size`, `bold`, `italic`, `underline`, `color`)
 · `fill` (`'RRGGBB'` / `'AARRGGBB'`) · `align` (`horizontal`, `vertical`,
@@ -142,11 +223,14 @@ for (const row of s.rows()) {            // sparse: row[col-1]
 `ReadCell.type` is `'string' | 'number' | 'boolean' | 'date' | 'formula' |
 'error' | 'empty'`. Numbers with a date format become `Date` (opt out with
 `readWorkbook(bytes, { dates: false })`) — formula cells get the same
-treatment from their cached result. Every cell also carries `.numFmt` (the
-resolved format code) when it has one, and `.hyperlink` (`{ target, tooltip? }`)
-when it carries one — external targets resolved via the worksheet's own
-relationships, in-workbook links via `location`. Formula cells carry both
-`.formula` (no leading `=`) and `.value` (the cached result). `{ sheets:
+treatment from their cached result. A string cell with multiple
+differently-formatted spans comes back as `.value: ReadRichTextRun[]` instead
+of a plain string. Every cell also carries `.numFmt` (the resolved format
+code) when it has one, `.hyperlink` (`{ target, tooltip? }`) when it carries
+one — external targets resolved via the worksheet's own relationships,
+in-workbook links via `location` — and `.comment` (`{ text, author }`) when it
+has a note, whether or not the cell itself has a value. Formula cells carry
+both `.formula` (no leading `=`) and `.value` (the cached result). `{ sheets:
 [name|index] }` loads a subset.
 
 `readWorkbookAsync(bytes, options?)` returns the same `ReadWorkbook` but yields
@@ -174,6 +258,26 @@ entry resolves `sheetName`/`range` when the reference is a simple single-sheet
 range; anything else (a formula, a multi-area reference, a named constant)
 keeps `refersTo` with `sheetName`/`range` left `undefined`.
 
+**Data validation** — `sheet.dataValidations` lists `list` / `whole` /
+`decimal` / `date` / `textLength` rules (other types — custom formula, time,
+etc. — are skipped). A `list` rule resolves `list` (inline choices) or
+`formula` (range reference); the others resolve `operator` and `values`
+(numbers, or `Date`s for `type: 'date'` — one entry, or two for
+`between`/`notBetween`).
+
+**Conditional formatting** — `sheet.conditionalFormats` lists `cellIs`,
+`colorScale` and `dataBar` rules as `{ ref, rule }` (other rule kinds — icon
+sets, top/bottom N, etc. — are skipped). `cellIs` resolves `operator`,
+`formula` (one or two, as written), and `style` (a `ReadStyle` with only
+`font.bold`/`italic`/`color` and `fill` populated — the differential-format's
+own limited scope) under `{ styles: true }`. `colorScale` resolves `colors`;
+`dataBar` resolves `color`.
+
+**Print setup** — `sheet.pageSetup` resolves `orientation`, `paperSize`,
+`fitToWidth`/`fitToHeight`, `scale`, `margins`, and `printArea` (from the
+sheet's own `_xlnm.Print_Area` defined name) — `undefined` when the sheet has
+neither a `<pageSetup>`/`<pageMargins>` block nor a print area.
+
 **Deliberately strict and small.** The XML is parsed by a ~200-line in-house
 tokenizer (not a dependency) that rejects `<!DOCTYPE>`, `<!ENTITY>`, `<![CDATA[>`
 and unknown entities outright — the DOCTYPE / entity-expansion class that
@@ -181,24 +285,85 @@ accounts for most XML-parser CVEs does not apply. Only an allow-list of parts is
 extracted, with uncompressed-size caps enforced before and after inflation.
 Still: parse untrusted uploads inside a worker with an overall time/memory limit.
 
-**Not read**: data validation, conditional formatting, images, charts, pivot
-tables, rich text runs, sheet-scoped defined names. Reading is aimed at files
-from mainstream tools (Excel, Google Sheets, LibreOffice, `openpyxl`,
-`exceljs`, quire) — not corrupt files or every vendor quirk. See
+**Not read**: images, charts, pivot tables, sheet-scoped defined names, data
+validation types beyond list/whole/decimal/date/textLength, conditional-format
+types beyond cellIs/colorScale/dataBar, threaded (modern) comments. Reading is
+aimed at files from mainstream tools (Excel, Google Sheets, LibreOffice,
+`openpyxl`, `exceljs`, quire) — not corrupt files or every vendor quirk. See
 [`PLAN-READER.md`](./PLAN-READER.md).
+
+## Streaming reader
+
+`readWorkbook()` materialises every cell of every loaded sheet in memory.
+`readRows()` streams one sheet's rows through a callback instead, so peak
+memory scales with row *width*, not row *count*:
+
+```js
+import { readRows } from '@uekichinos/quire'
+
+const meta = readRows(bytes, 'Sales', (cells, row) => {
+  db.insert(row, cells.map((c) => c?.value))
+})
+
+meta.dimension        // { rows, cols }
+meta.dataValidations  // sheet-level metadata is still resolved up front
+meta.pageSetup
+```
+`cells[i]` is `undefined` for a blank cell, matching `ReadWorksheet.rows()`.
+Sheet-level metadata (`merges`, `columnStyles`/`rowStyles`, `dataValidations`,
+`conditionalFormats`, `pageSetup`) comes back in the return value alongside
+the stream. Two honest limits: **hyperlinks and comments aren't attached** to
+streamed rows (resolving them needs a second pass over the sheet's cells,
+which this mode specifically avoids holding — use `readWorkbook` if you need
+them), and it's still **one synchronous parse pass** under the hood, same as
+`readWorkbook` for a single sheet — this reduces memory, not blocking; there's
+no async/streaming variant, since the hand-rolled tokenizer isn't
+interruptible mid-parse.
 
 ## Scope
 
 `quire` is **not** a drop-in ExcelJS replacement. The **writer** covers the
 common "export a styled spreadsheet" case; the **reader** covers "import the
 values from a normal `.xlsx`". Out of scope for both (see [`PLAN.md`](./PLAN.md)
-and [`PLAN-READER.md`](./PLAN-READER.md)): images, charts, pivot tables, rich
-text, a streaming mode, `.xls` / `.xlsb`.
+and [`PLAN-READER.md`](./PLAN-READER.md)): images, charts, pivot tables,
+`.xls` / `.xlsb`.
+
+## Streaming writer
+
+`createWorkbook()`'s `xlsx()` holds every cell in memory until you call it —
+fine up to a few hundred thousand rows, wasteful well beyond that.
+`createStreamingWorkbook()` renders and DEFLATEs each row as it's added instead,
+so memory stays flat regardless of row count:
+
+```js
+import { createStreamingWorkbook } from '@uekichinos/quire'
+
+const wb = createStreamingWorkbook()
+const sheet = wb.addWorksheet('Big', { columns: [{ width: 20 }], freeze: { ySplit: 1 } })
+
+sheet.addRow(['ID', 'Name', 'Created'])
+for (let i = 1; i <= 2_000_000; i++) {
+  sheet.addRow([i, `Row ${i}`, new Date(2024, 0, 1)])
+}
+
+const bytes = await wb.finish() // Uint8Array — same as xlsx(), just async
+```
+
+Everything from the buffered writer works — hyperlinks, rich text, merges,
+freeze panes, auto-filter, data validation, conditional formatting, comments,
+print setup, `defineName` — with one constraint: it's **one pass,
+forward-only**. There's no `setCell`/`setRow` random access, and
+`setColumn`/`freeze`/`setPageSetup` must be called before that sheet's first
+`addRow()` (they render into the header, which is flushed immediately).
+`merge`/`autoFilter`/`setDataValidation`/`addConditionalFormat`/`setComment`
+can be called any time before `finish()`. Multiple sheets can be written
+interleaved or in any order.
 
 ## Performance
 
-In-memory. Writing ~100k rows × 5 cols takes ~1 s; reading is comparable. For
-millions of rows, chunk across sheets or wait for a streaming mode.
+In-memory (buffered) writing of ~100k rows × 5 cols takes ~1 s; reading is
+comparable. Past that, or for an unbounded/very large row count, use the
+[streaming writer](#streaming-writer) and/or the [streaming reader](#streaming-reader).
 
 ## License
 

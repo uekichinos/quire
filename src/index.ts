@@ -16,6 +16,14 @@ export type {
   CellScalar,
   FormulaValue,
   HyperlinkValue,
+  RichText,
+  RichTextRun,
+  DataValidationRule,
+  DataValidationOptions,
+  ValidationOperator,
+  ConditionalFormatRule,
+  PageSetupOptions,
+  CommentOptions,
   AddRowOptions,
   RowOptions,
   ColumnSpec,
@@ -31,7 +39,7 @@ export type {
 } from './style'
 
 // --- Reading (0.2.0) ---
-export { readWorkbook, readWorkbookAsync } from './read'
+export { readWorkbook, readWorkbookAsync, readRows } from './read'
 export type {
   ReadWorkbook,
   ReadWorksheet,
@@ -45,10 +53,21 @@ export type {
   ReadBorderEdge,
   ReadHyperlink,
   ReadDefinedName,
+  ReadRichTextRun,
+  ReadComment,
+  ReadDataValidation,
+  ReadConditionalFormat,
+  ReadConditionalFormatRule,
+  ReadPageSetup,
+  StreamRowsResult,
 } from './read'
 export { QuireError } from './errors'
 export { XlsxReadError } from './unzip'
 export { XmlError } from './xml-read'
+
+// --- Streaming writer ---
+export { createStreamingWorkbook } from './streaming'
+export type { StreamingWorkbook, StreamingWorksheet } from './streaming'
 
 // Low-level helpers, exported for advanced use and testing.
 export { colLetter, colNumber, parseRef, toRef, toRange, type CellAddress } from './address'

@@ -55,6 +55,30 @@ export class StylePool {
   private xfs: ResolvedXf[] = [{ numFmtId: 0, fontId: 0, fillId: 0, borderId: 0 }]
   private xfByKey = new Map<string, number>([['0|0|0|0|', 0]])
 
+  // Differential formats (dxfs) — conditional-formatting's own, simpler pool: unlike
+  // cellXfs, a dxf holds only the *overrides* it applies (no numFmtId/font-name/size
+  // required), and there's no "id 0 is the default" convention to special-case.
+  private dxfs: string[] = []
+  private dxfByKey = new Map<string, number>()
+
+  /** dxfs index for a conditional-format style delta. */
+  internDxf(style: { font?: Pick<FontStyle, 'bold' | 'italic' | 'color'>; fill?: string }): number {
+    const key = JSON.stringify(style)
+    let idx = this.dxfByKey.get(key)
+    if (idx !== undefined) return idx
+    idx = this.dxfs.length
+    const f = style.font
+    const fontBits =
+      (f?.bold ? '<b/>' : '') + (f?.italic ? '<i/>' : '') + (f?.color ? `<color rgb="${toArgb(f.color)}"/>` : '')
+    const fontXml = fontBits ? `<font>${fontBits}</font>` : ''
+    const fillXml = style.fill
+      ? `<fill><patternFill><bgColor rgb="${toArgb(style.fill)}"/></patternFill></fill>`
+      : ''
+    this.dxfs.push(`<dxf>${fontXml}${fillXml}</dxf>`)
+    this.dxfByKey.set(key, idx)
+    return idx
+  }
+
   /** cellXfs index for a style. `0` for an empty/undefined non-date style. */
   intern(style: CellStyle | undefined, opts: { isDate?: boolean } = {}): number {
     if (!opts.isDate && isEmptyStyle(style)) return 0
@@ -187,6 +211,9 @@ export class StylePool {
       `<cellXfs count="${this.xfs.length}">` + this.xfs.map(renderXf).join('') + `</cellXfs>`,
     )
     parts.push('<cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles>')
+    if (this.dxfs.length) {
+      parts.push(`<dxfs count="${this.dxfs.length}">${this.dxfs.join('')}</dxfs>`)
+    }
 
     return (
       '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n' +

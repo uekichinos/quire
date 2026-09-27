@@ -2,6 +2,91 @@
 
 All notable changes to `@uekichinos/quire` are documented here.
 
+## [Unreleased]
+
+### Streaming reader
+- `readRows(bytes, sheetNameOrIndex, onRow, options?)` — streams one sheet's
+  rows through `onRow` as each is parsed, instead of materialising the whole
+  sheet in memory like `readWorkbook` does. Peak memory scales with row
+  *width*, not row *count*. Sheet-level metadata (`merges`, `columnStyles`/
+  `rowStyles`, `dataValidations`, `conditionalFormats`, `pageSetup`) still
+  comes back in the return value
+- Two documented limits: hyperlinks/comments aren't attached to streamed rows
+  (resolving them needs a second pass over the cells, which this mode avoids
+  holding); still one synchronous parse pass under the hood (lower memory,
+  not lower blocking) — the hand-rolled tokenizer isn't interruptible
+
+### Print setup (read + write)
+- Write: `sheet.setPageSetup({ orientation?, paperSize?, fitToWidth?,
+  fitToHeight?, scale?, margins?, printArea? })` — `<sheetPr><pageSetUpPr
+  fitToPage="1"/></sheetPr>` emitted only when fit-to-page is used; margins
+  default to Excel's own (0.7/0.7/0.75/0.75/0.3/0.3in); `printArea` becomes
+  the sheet's `_xlnm.Print_Area` workbook-level defined name. In the
+  streaming writer, must be called before that sheet's first `addRow()`
+- Read: `sheet.pageSetup` resolves the same shape from `<pageSetup>`/
+  `<pageMargins>` plus the sheet's own `_xlnm.Print_Area`
+
+### Conditional formatting — data bars
+- Write: `addConditionalFormat(range, { type: 'dataBar', color })`
+- Read: `sheet.conditionalFormats` now also resolves `dataBar` rules
+
+### Streaming writer
+- `createStreamingWorkbook()` — a low-memory writer for very large sheets:
+  each row is rendered and DEFLATEd (via `fflate`'s streaming `Zip`/
+  `ZipDeflate`) as soon as it's added, instead of being held in memory (as
+  cell objects, then as one big XML string) for the workbook's lifetime
+- Supports everything the buffered writer does — hyperlinks, rich text,
+  merges, freeze panes, auto-filter, data validation, conditional formatting,
+  comments, `defineName` — one pass, forward-only: no `setCell`/`setRow`
+  random access; `setColumn`/`freeze` must be called before that sheet's
+  first `addRow()` (they render into the header, flushed immediately).
+  Multiple sheets can be written interleaved or in any order
+- `finish(): Promise<Uint8Array>` — same byte format `xlsx()` produces
+- Shares its cell/row/tail rendering with the buffered writer via a set of
+  extracted pure functions (`renderCellXml`, `colsXmlOf`,
+  `dataValidationsXmlOf`, `conditionalFormatsXmlOf`, `commentsXmlOf`,
+  `vmlDrawingXmlOf`, `buildRelsAndRefsOf`) so the two can't drift on what a
+  given value renders as — verified by a same-input-same-output test
+
+### Data validation (read + write) — extended beyond lists
+- Write: `sheet.setDataValidation(range, rule, options?)` — `rule` is now a
+  discriminated union: `{ type: 'list', list }` (unchanged), or `{ type:
+  'whole' | 'decimal' | 'textLength' | 'date', operator, value }` with
+  `value` a single number/`Date` or a `[min, max]` pair for
+  `between`/`notBetween`; shared options (`allowBlank`, prompt/error text)
+  moved to a separate 3rd argument
+- Read: `sheet.dataValidations` now also surfaces `whole`/`decimal`/`date`/
+  `textLength` rules (previously `list` only), resolving `operator` and
+  `values` (numbers, or `Date`s for `type: 'date'`)
+
+### Conditional formatting (read + write)
+- Write: `sheet.addConditionalFormat(range, rule)` — `{ type: 'cellIs',
+  operator, formula, style }` (font bold/italic/color + fill, via a new
+  differential-format ("dxf") pool in `styles.xml`) or `{ type: 'colorScale',
+  colors }` (2 or 3 stops, thresholds at the range's own min/mid/max)
+- Read: `sheet.conditionalFormats` lists `cellIs` and `colorScale` rules as
+  `{ ref, rule }`; other rule kinds (data bars, icon sets, top/bottom N,
+  custom formula) are skipped. `cellIs.style` resolves under
+  `{ styles: true }` via a new `dxfStyle` pool in `style-read.ts`
+
+### Rich text (read + write)
+- A cell value can be `RichTextRun[]` — `[{ text, font? }, …]` — for multiple
+  differently-formatted spans in one string. Interned through the same
+  shared-string table as plain strings (deduped by run content)
+- Read: a shared-string entry with more than one run, or one formatted run,
+  comes back as `ReadRichTextRun[]`; a single unformatted run still collapses
+  to a plain `string` so the common case is unaffected
+
+### Comments (read + write)
+- Write: `sheet.setComment(ref, text, { author? })` — classic (legacy)
+  comments: `xl/commentsN.xml` + a VML drawing (`xl/drawings/vmlDrawingN.vml`)
+  for the indicator triangle/popup, wired via the worksheet's own rels and
+  `<legacyDrawing>`. Independent of the cell's value — works on an empty cell
+- Read: `ReadCell.comment` → `{ text, author }`, resolved via the worksheet's
+  `comments`-typed relationship; also fixed to attach to a cell with no `<c>`
+  element at all instead of silently dropping (same fix applied to hyperlinks)
+- `xl/commentsN.xml` added to the read allow-list
+
 ## [0.4.0] - 2026-09-26
 
 Hyperlinks, defined names, and column/row default styles — read and write.

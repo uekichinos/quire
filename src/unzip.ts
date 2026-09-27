@@ -22,7 +22,7 @@ export const DEFAULT_LIMITS: UnzipLimits = {
 
 /** Only these parts are ever extracted — anything else in the archive is ignored. */
 const ALLOWED_PART =
-  /^xl\/(workbook\.xml|_rels\/workbook\.xml\.rels|sharedstrings\.xml|styles\.xml|theme\/theme[0-9]*\.xml|worksheets\/[^/]+\.xml|worksheets\/_rels\/[^/]+\.xml\.rels)$/i
+  /^xl\/(workbook\.xml|_rels\/workbook\.xml\.rels|sharedstrings\.xml|styles\.xml|theme\/theme[0-9]*\.xml|worksheets\/[^/]+\.xml|worksheets\/_rels\/[^/]+\.xml\.rels|comments[0-9]*\.xml)$/i
 
 function normalise(name: string): string {
   return name.replace(/\\/g, '/').replace(/^\.\//, '')

@@ -380,3 +380,382 @@ describe('createWorkbook — row default style (empty cells)', () => {
     expect(sheet.rowStyles.get(2)).toMatchObject({ font: { bold: true } })
   })
 })
+
+describe('createWorkbook — data validation', () => {
+  it('writes an inline list as a quoted comma-separated formula1', () => {
+    const parts = build((wb) => {
+      const s = wb.addWorksheet('S')
+      s.addRow(['x'])
+      s.setDataValidation('A2:A100', { type: 'list', list: ['Open', 'In Progress', 'Done'] })
+    })
+    expect(parts['xl/worksheets/sheet1.xml']).toContain(
+      '<dataValidation type="list" allowBlank="1" showInputMessage="1" showErrorMessage="1" sqref="A2:A100">' +
+        '<formula1>"Open,In Progress,Done"</formula1></dataValidation>',
+    )
+  })
+
+  it('writes a range reference unquoted, and prompt/error attrs when given', () => {
+    const parts = build((wb) => {
+      const s = wb.addWorksheet('S')
+      s.addRow(['x'])
+      s.setDataValidation(
+        'B1:B10',
+        { type: 'list', list: 'Lookup!$A$1:$A$5' },
+        {
+          allowBlank: false,
+          promptTitle: 'Pick',
+          promptMessage: 'Choose one',
+          errorTitle: 'Bad',
+          errorMessage: 'Not allowed',
+        },
+      )
+    })
+    const xml = parts['xl/worksheets/sheet1.xml']!
+    expect(xml).toContain('allowBlank="0"')
+    expect(xml).toContain('promptTitle="Pick"')
+    expect(xml).toContain('prompt="Choose one"')
+    expect(xml).toContain('errorTitle="Bad"')
+    expect(xml).toContain('error="Not allowed"')
+    expect(xml).toContain('<formula1>Lookup!$A$1:$A$5</formula1>')
+  })
+
+  it('rejects a comma in a choice, an empty list, and an over-long inline list', () => {
+    const wb = createWorkbook()
+    const s = wb.addWorksheet('S')
+    expect(() => s.setDataValidation('A1', { type: 'list', list: ['a,b'] })).toThrow(/comma/)
+    expect(() => s.setDataValidation('A1', { type: 'list', list: [] })).toThrow(/at least one choice/)
+    expect(() => s.setDataValidation('A1', { type: 'list', list: ['x'.repeat(260)] })).toThrow(/255-character/)
+    expect(() => s.setDataValidation('A1', { type: 'list', list: '' })).toThrow(/needs a list/)
+  })
+
+  it('writes a whole-number "between" rule with two formulas', () => {
+    const parts = build((wb) => {
+      const s = wb.addWorksheet('S')
+      s.addRow(['x'])
+      s.setDataValidation('A1:A10', { type: 'whole', operator: 'between', value: [1, 100] })
+    })
+    expect(parts['xl/worksheets/sheet1.xml']).toContain(
+      '<dataValidation type="whole" allowBlank="1" operator="between" showInputMessage="1" showErrorMessage="1" sqref="A1:A10">' +
+        '<formula1>1</formula1><formula2>100</formula2></dataValidation>',
+    )
+  })
+
+  it('writes a date rule as Excel serials', () => {
+    const parts = build((wb) => {
+      const s = wb.addWorksheet('S')
+      s.addRow(['x'])
+      s.setDataValidation('A1', { type: 'date', operator: 'greaterThan', value: new Date(2024, 0, 1) })
+    })
+    expect(parts['xl/worksheets/sheet1.xml']).toContain(
+      '<dataValidation type="date" allowBlank="1" operator="greaterThan" showInputMessage="1" showErrorMessage="1" sqref="A1">' +
+        '<formula1>45292</formula1></dataValidation>',
+    )
+  })
+
+  it('rejects a pair value for a non-between operator and a single value for between', () => {
+    const wb = createWorkbook()
+    const s = wb.addWorksheet('S')
+    expect(() =>
+      s.setDataValidation('A1', { type: 'whole', operator: 'greaterThan', value: [1, 2] }),
+    ).toThrow(/takes a single value/)
+    expect(() =>
+      s.setDataValidation('A1', { type: 'whole', operator: 'between', value: 1 as never }),
+    ).toThrow(/needs a \[min, max\]/)
+  })
+
+  it('round-trips a list rule through readWorkbook', () => {
+    const wb = createWorkbook()
+    const s = wb.addWorksheet('S')
+    s.addRow(['x'])
+    s.setDataValidation('A2:A100', { type: 'list', list: ['Open', 'Done'] }, { promptMessage: 'Pick one' })
+    const sheet = readWorkbook(wb.xlsx()).sheet('S')!
+    expect(sheet.dataValidations).toEqual([
+      {
+        ref: 'A2:A100',
+        type: 'list',
+        allowBlank: true,
+        promptTitle: undefined,
+        promptMessage: 'Pick one',
+        errorTitle: undefined,
+        errorMessage: undefined,
+        list: ['Open', 'Done'],
+      },
+    ])
+  })
+
+  it('round-trips a decimal "between" rule with resolved numeric values', () => {
+    const wb = createWorkbook()
+    const s = wb.addWorksheet('S')
+    s.addRow(['x'])
+    s.setDataValidation('B1:B10', { type: 'decimal', operator: 'between', value: [0.5, 9.5] })
+    const rule = readWorkbook(wb.xlsx()).sheet('S')!.dataValidations[0]!
+    expect(rule).toMatchObject({ type: 'decimal', operator: 'between', values: [0.5, 9.5] })
+  })
+
+  it('round-trips a date rule back into Date objects', () => {
+    const wb = createWorkbook()
+    const s = wb.addWorksheet('S')
+    s.addRow(['x'])
+    s.setDataValidation('C1', { type: 'date', operator: 'greaterThan', value: new Date(2024, 0, 1) })
+    const rule = readWorkbook(wb.xlsx()).sheet('S')!.dataValidations[0]!
+    expect(rule.type).toBe('date')
+    expect((rule as { values: Date[] }).values[0]).toEqual(new Date(2024, 0, 1))
+  })
+})
+
+describe('createWorkbook — conditional formatting', () => {
+  it('writes a cellIs rule with a dxf and round-trips it', () => {
+    const wb = createWorkbook()
+    const s = wb.addWorksheet('S')
+    s.addRow([50])
+    s.addConditionalFormat('A1:A100', {
+      type: 'cellIs',
+      operator: 'greaterThan',
+      formula: 100,
+      style: { font: { bold: true, color: 'FF0000' }, fill: 'FFFF00' },
+    })
+    const bytes = wb.xlsx()
+    const parts = unzipSync(bytes)
+    const sheetXml = strFromU8(parts['xl/worksheets/sheet1.xml']!)
+    expect(sheetXml).toContain('<conditionalFormatting sqref="A1:A100">')
+    expect(sheetXml).toMatch(/<cfRule type="cellIs" dxfId="\d+" priority="1" operator="greaterThan"><formula>100<\/formula><\/cfRule>/)
+    expect(strFromU8(parts['xl/styles.xml']!)).toContain('<dxfs count="1">')
+
+    const sheet = readWorkbook(bytes, { styles: true }).sheet('S')!
+    expect(sheet.conditionalFormats).toEqual([
+      {
+        ref: 'A1:A100',
+        rule: {
+          type: 'cellIs',
+          operator: 'greaterThan',
+          formula: ['100'],
+          style: { font: { bold: true, color: 'FFFF0000' }, fill: 'FFFFFF00' },
+        },
+      },
+    ])
+  })
+
+  it('writes a 3-stop colorScale rule and round-trips it', () => {
+    const wb = createWorkbook()
+    const s = wb.addWorksheet('S')
+    s.addRow([1])
+    s.addConditionalFormat('A1:A100', { type: 'colorScale', colors: ['FF0000', 'FFFF00', '00FF00'] })
+    const bytes = wb.xlsx()
+    const sheet = readWorkbook(bytes).sheet('S')!
+    expect(sheet.conditionalFormats).toEqual([
+      {
+        ref: 'A1:A100',
+        rule: { type: 'colorScale', colors: ['FFFF0000', 'FFFFFF00', 'FF00FF00'] },
+      },
+    ])
+  })
+
+  it('rejects a colorScale with the wrong number of colours and a between rule missing a pair', () => {
+    const wb = createWorkbook()
+    const s = wb.addWorksheet('S')
+    expect(() =>
+      s.addConditionalFormat('A1', { type: 'colorScale', colors: ['FF0000'] as never }),
+    ).toThrow(/2 or 3 colours/)
+    expect(() =>
+      s.addConditionalFormat('A1', { type: 'cellIs', operator: 'between', formula: 5, style: {} }),
+    ).toThrow(/needs a \[min, max\] formula/)
+  })
+
+  it('writes a dataBar rule and round-trips it', () => {
+    const wb = createWorkbook()
+    const s = wb.addWorksheet('S')
+    s.addRow([1])
+    s.addConditionalFormat('A1:A100', { type: 'dataBar', color: '638EC6' })
+    const bytes = wb.xlsx()
+    const parts = unzipSync(bytes)
+    expect(strFromU8(parts['xl/worksheets/sheet1.xml']!)).toContain(
+      '<cfRule type="dataBar" priority="1"><dataBar><cfvo type="min"/><cfvo type="max"/>' +
+        '<color rgb="FF638EC6"/></dataBar></cfRule>',
+    )
+    const sheet = readWorkbook(bytes).sheet('S')!
+    expect(sheet.conditionalFormats).toEqual([
+      { ref: 'A1:A100', rule: { type: 'dataBar', color: 'FF638EC6' } },
+    ])
+  })
+})
+
+describe('createWorkbook — rich text', () => {
+  it('writes runs with per-run <rPr> into a shared <si>', () => {
+    const parts = build((wb) => {
+      wb.addWorksheet('S').addRow([
+        [{ text: 'Order ' }, { text: '#1234', font: { bold: true, color: 'FF0000' } }],
+      ])
+    })
+    expect(parts['xl/sharedStrings.xml']).toContain(
+      '<si><r><t xml:space="preserve">Order </t></r>' +
+        '<r><rPr><b/><color rgb="FFFF0000"/></rPr><t xml:space="preserve">#1234</t></r></si>',
+    )
+  })
+
+  it('de-duplicates identical rich text values', () => {
+    const rich = [{ text: 'a' }, { text: 'b', font: { italic: true } }]
+    const parts = build((wb) => {
+      const s = wb.addWorksheet('S')
+      s.addRow([rich])
+      s.addRow([[...rich]]) // structurally identical, different array instance
+    })
+    expect(parts['xl/sharedStrings.xml']).toContain('uniqueCount="1"')
+  })
+
+  it('rejects an empty run array', () => {
+    const wb = createWorkbook()
+    expect(() => wb.addWorksheet('S').setCell('A1', [])).toThrow(/at least one run/)
+  })
+
+  it('round-trips through readWorkbook', () => {
+    const wb = createWorkbook()
+    wb.addWorksheet('S').addRow([
+      [{ text: 'Order ' }, { text: '#1234', font: { bold: true, color: 'FF0000' } }, { text: ' shipped' }],
+    ])
+    const cell = readWorkbook(wb.xlsx()).sheet('S')!.cell('A1')!
+    expect(cell.value).toEqual([
+      { text: 'Order ' },
+      { text: '#1234', font: { bold: true, color: 'FFFF0000' } },
+      { text: ' shipped' },
+    ])
+  })
+
+  it('a plain string cell is unaffected — still round-trips as a bare string', () => {
+    const wb = createWorkbook()
+    wb.addWorksheet('S').addRow(['plain'])
+    const cell = readWorkbook(wb.xlsx()).sheet('S')!.cell('A1')!
+    expect(cell.value).toBe('plain')
+  })
+})
+
+describe('createWorkbook — comments', () => {
+  it('writes commentsN.xml, vmlDrawingN.vml, the sheet rels, and content types', () => {
+    const parts = build((wb) => {
+      const s = wb.addWorksheet('S')
+      s.addRow(['x'])
+      s.setComment('A1', 'Hello', { author: 'Alice' })
+    })
+    expect(parts['xl/comments1.xml']).toContain(
+      '<author>Alice</author>',
+    )
+    expect(parts['xl/comments1.xml']).toContain(
+      '<comment ref="A1" authorId="0"><text><r><t xml:space="preserve">Hello</t></r></text></comment>',
+    )
+    expect(parts['xl/drawings/vmlDrawing1.vml']).toContain('<x:Row>0</x:Row><x:Column>0</x:Column>')
+    expect(parts['xl/worksheets/sheet1.xml']).toMatch(/<legacyDrawing r:id="rId\d+"\/>/)
+    expect(parts['xl/worksheets/_rels/sheet1.xml.rels']).toContain('relationships/comments')
+    expect(parts['xl/worksheets/_rels/sheet1.xml.rels']).toContain('relationships/vmlDrawing')
+    expect(parts['[Content_Types].xml']).toContain('/xl/comments1.xml')
+    expect(parts['[Content_Types].xml']).toContain('Extension="vml"')
+  })
+
+  it('omits comment parts entirely when there are none', () => {
+    const parts = build((wb) => wb.addWorksheet('S').addRow(['x']))
+    expect(parts['xl/comments1.xml']).toBeUndefined()
+    expect(parts['xl/drawings/vmlDrawing1.vml']).toBeUndefined()
+    expect(parts['xl/worksheets/_rels/sheet1.xml.rels']).toBeUndefined()
+  })
+
+  it('keys authors per distinct name', () => {
+    const parts = build((wb) => {
+      const s = wb.addWorksheet('S')
+      s.setComment('A1', 'first', { author: 'Alice' })
+      s.setComment('B1', 'second', { author: 'Bob' })
+      s.setComment('C1', 'third', { author: 'Alice' })
+    })
+    const xml = parts['xl/comments1.xml']!
+    expect(xml).toContain('<authors><author>Alice</author><author>Bob</author></authors>')
+    expect(xml).toMatch(/<comment ref="A1" authorId="0">/)
+    expect(xml).toMatch(/<comment ref="B1" authorId="1">/)
+    expect(xml).toMatch(/<comment ref="C1" authorId="0">/)
+  })
+
+  it('rejects empty comment text', () => {
+    const wb = createWorkbook()
+    expect(() => wb.addWorksheet('S').setComment('A1', '')).toThrow(/non-empty/)
+  })
+
+  it('round-trips, including a comment on a cell with no value at all', () => {
+    const wb = createWorkbook()
+    const s = wb.addWorksheet('S')
+    s.addRow(['x'])
+    s.setComment('A1', 'on a value', { author: 'A' })
+    s.setComment('Z9', 'on nothing')
+    const sheet = readWorkbook(wb.xlsx()).sheet('S')!
+    expect(sheet.cell('A1')!.comment).toEqual({ text: 'on a value', author: 'A' })
+    expect(sheet.cell('Z9')).toMatchObject({ type: 'empty', value: null, comment: { text: 'on nothing', author: '' } })
+  })
+
+  it('is idempotent across repeated xlsx() calls', () => {
+    const wb = createWorkbook()
+    wb.addWorksheet('S').setComment('A1', 'hi')
+    expect(Array.from(wb.xlsx())).toEqual(Array.from(wb.xlsx()))
+  })
+})
+
+describe('createWorkbook — print setup', () => {
+  it('writes sheetPr fitToPage only when fitToWidth/fitToHeight are set', () => {
+    const withFit = build((wb) => {
+      const s = wb.addWorksheet('S')
+      s.addRow(['x'])
+      s.setPageSetup({ fitToWidth: 1, fitToHeight: 0 })
+    })
+    expect(withFit['xl/worksheets/sheet1.xml']).toContain(
+      '<sheetPr><pageSetUpPr fitToPage="1"/></sheetPr>',
+    )
+
+    const noFit = build((wb) => {
+      const s = wb.addWorksheet('S')
+      s.addRow(['x'])
+      s.setPageSetup({ orientation: 'landscape' })
+    })
+    expect(noFit['xl/worksheets/sheet1.xml']).not.toContain('sheetPr')
+  })
+
+  it('defaults margins and merges partial overrides over Excel\'s own defaults', () => {
+    const parts = build((wb) => {
+      const s = wb.addWorksheet('S')
+      s.addRow(['x'])
+      s.setPageSetup({ margins: { left: 0.2, header: 0.1 } })
+    })
+    expect(parts['xl/worksheets/sheet1.xml']).toContain(
+      '<pageMargins left="0.2" right="0.7" top="0.75" bottom="0.75" header="0.1" footer="0.3"/>',
+    )
+  })
+
+  it('writes the print area as a workbook-level _xlnm.Print_Area defined name', () => {
+    const parts = build((wb) => {
+      const s = wb.addWorksheet('Sales')
+      s.addRow(['x'])
+      s.setPageSetup({ printArea: 'A1:C10' })
+    })
+    expect(parts['xl/workbook.xml']).toContain(
+      `<definedName name="_xlnm.Print_Area" localSheetId="0">'Sales'!$A$1:$C$10</definedName>`,
+    )
+  })
+
+  it('rejects invalid fitToWidth/fitToHeight/scale/paperSize/printArea', () => {
+    const wb = createWorkbook()
+    const s = wb.addWorksheet('S')
+    expect(() => s.setPageSetup({ fitToWidth: -1 })).toThrow(/fitToWidth/)
+    expect(() => s.setPageSetup({ fitToHeight: 1.5 })).toThrow(/fitToHeight/)
+    expect(() => s.setPageSetup({ scale: 0 })).toThrow(/scale/)
+    expect(() => s.setPageSetup({ paperSize: 0 })).toThrow(/paperSize/)
+    expect(() => s.setPageSetup({ printArea: 'not a ref' })).toThrow(/invalid/)
+  })
+
+  it('round-trips through readWorkbook', () => {
+    const wb = createWorkbook()
+    const s = wb.addWorksheet('S')
+    s.addRow(['x'])
+    s.setPageSetup({ orientation: 'landscape', paperSize: 9, printArea: 'A1:B5' })
+    const sheet = readWorkbook(wb.xlsx()).sheet('S')!
+    expect(sheet.pageSetup).toMatchObject({ orientation: 'landscape', paperSize: 9, printArea: 'A1:B5' })
+  })
+
+  it('a sheet without setPageSetup has no pageSetup on read', () => {
+    const wb = createWorkbook()
+    wb.addWorksheet('S').addRow(['x'])
+    expect(readWorkbook(wb.xlsx()).sheet('S')!.pageSetup).toBeUndefined()
+  })
+})

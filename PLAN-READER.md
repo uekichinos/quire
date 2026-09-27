@@ -278,6 +278,96 @@ default styles unreadable from quire's own output. Reader gains
 hostile file contains. 12 new tests.
 **Still deferred:** sheet-scoped defined names, rich text runs.
 
+### R8 — data validation, rich text, comments ✅ done (unreleased)
+Three additions picked as the "most used or interesting" of the remaining
+exceljs-parity gaps:
+- **Data validation** — write `sheet.setDataValidation(range, { list, ... })`
+  (`type="list"` only: inline choices or a range reference); read
+  `sheet.dataValidations`, filtered to `type="list"` rules
+- **Rich text** — a cell value can be `RichTextRun[]`, interned through the
+  same shared-string table as plain strings; reading collapses a single
+  unformatted run back to a plain string so the common case is unaffected,
+  but keeps a single *formatted* run as `ReadRichTextRun[]` (it carries data a
+  plain string can't)
+- **Comments** — write emits classic (legacy) comments: `xl/commentsN.xml` +
+  a VML drawing part for the indicator/popup box, wired through the
+  worksheet's own rels + `<legacyDrawing>`; multiple distinct authors are
+  interned per sheet. Read resolves `ReadCell.comment` via the worksheet's
+  `comments`-typed relationship (found by type, not by a fixed part name,
+  since real files don't necessarily number `commentsN.xml` by sheet index)
+
+**Bug fixed along the way:** a hyperlink or comment on a cell with *no* `<c>`
+element at all (a genuinely empty cell) was silently dropped on read — both
+now materialise a placeholder `empty` cell so the annotation isn't lost.
+
+**Deferred:** non-`list` validation types, conditional formatting, threaded
+(modern) comments, sheet-scoped defined names.
+
+### R9 — extended data validation, conditional formatting, streaming writer ✅ done (unreleased)
+Picked as the next "most used or interesting" three from the remaining gap:
+- **Extended data validation** — `setDataValidation(range, rule, options?)`'s
+  `rule` became a discriminated union (`list` unchanged; `whole`/`decimal`/
+  `textLength`/`date` add `operator` + `value`, a single number/`Date` or a
+  `[min, max]` pair for `between`/`notBetween`). Read resolves the same set,
+  `values` (plural) replacing the single-formula shape
+- **Conditional formatting** — `addConditionalFormat(range, rule)`: `cellIs`
+  (highlight on a condition, styled via a new dxf pool in `styles.xml`
+  mirroring cellXfs but simpler — no "id 0 is default" convention, inline
+  font/fill instead of an indexed lookup) and `colorScale` (2/3-stop gradient,
+  inline colours, no dxf). Read adds a `dxfStyle` pool to `style-read.ts` and
+  resolves `sheet.conditionalFormats`, skipping unsupported rule kinds
+  (dataBar, iconSet, top10, custom formula)
+- **Streaming writer** (`src/streaming.ts`, `createStreamingWorkbook()`) —
+  the biggest of the three: renders and DEFLATEs each row via fflate's
+  streaming `Zip`/`ZipDeflate` as it's added, instead of holding the whole
+  sheet in memory. One pass, forward-only (no `setCell`/`setRow`;
+  `setColumn`/`freeze` must precede the first `addRow()` on that sheet since
+  they render into the already-flushed header) but otherwise full parity
+  with the buffered writer — hyperlinks, rich text, merges, data validation,
+  conditional formatting, comments, `defineName` all supported, since none of
+  them depend on row buffering (they're collected as metadata and rendered
+  into the tail after all rows are flushed). Shares its cell/row/tail
+  rendering with the buffered writer via extracted pure functions
+  (`renderCellXml`, `colsXmlOf`, `dataValidationsXmlOf`,
+  `conditionalFormatsXmlOf`, `commentsXmlOf`, `vmlDrawingXmlOf`,
+  `buildRelsAndRefsOf`) — a pure refactor verified behavior-identical before
+  the streaming class was built on top of it, so the two writers can't drift
+
+**Deferred:** everything R8 deferred, plus sheet-scoped conditional formats,
+a streaming *reader*.
+
+### R10 — data bars, print setup, streaming reader ✅ done (unreleased)
+The next "most used or interesting" three — the streaming *reader* R9 had
+just deferred, plus two smaller, contained additions:
+- **Data bars** — `addConditionalFormat(range, { type: 'dataBar', color })`,
+  read/write. Extends R9's conditional-formatting union with a third variant;
+  no new pool needed (colour is inline in the rule, like `colorScale`)
+- **Print setup** — `setPageSetup({ orientation?, paperSize?, fitToWidth?,
+  fitToHeight?, scale?, margins?, printArea? })`. `<sheetPr>` (fit-to-page
+  flag) needed a new *header*-position slot ahead of `<dimension>`;
+  `<pageMargins>`/`<pageSetup>` a new *tail* slot between `<hyperlinks>` and
+  `<legacyDrawing>`. `printArea` reuses the existing defined-names machinery
+  (a `_xlnm.Print_Area` entry per sheet, same shape as autoFilter's
+  `_xlnm._FilterDatabase`) rather than inventing new plumbing
+- **Streaming reader** (`readRows()`) — the honest scope, worked out
+  carefully: the hand-rolled tokenizer (`xml-read.ts`) is a single
+  synchronous pass with no pause/resume capability, so a *true* async,
+  incrementally-decompressing streaming reader isn't achievable without
+  rewriting the tokenizer into a resumable coroutine — out of scope for this
+  round. What *is* achievable and still genuinely valuable: `parseSheet` now
+  accepts an `onRow` callback and, when set, never populates the whole-sheet
+  `cells` map — each row is buffered, handed to the callback, and discarded,
+  so peak memory scales with row width instead of row count. Still one
+  synchronous parse pass (documented plainly, same honesty bar as
+  `readWorkbookAsync`'s single-sheet caveat) — this is a memory optimization,
+  not a concurrency one. Hyperlinks/comments are skipped in this mode since
+  resolving them needs a second pass over the sheet's cells, which is exactly
+  what streaming mode avoids holding
+
+**Deferred:** a true async/incremental streaming reader (would need a
+resumable tokenizer), sheet-scoped conditional formats, data-bar gradient
+customization (min/max always the range's own, no custom `cfvo` thresholds).
+
 ---
 
 ## 9. Questions for you

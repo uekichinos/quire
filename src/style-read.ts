@@ -46,6 +46,8 @@ export interface StyleSheet {
   customCode: Map<number, string>
   /** `cellXfs[i]` → resolved `ReadStyle` — only when `withStyles` was set. */
   xfStyle: ReadStyle[]
+  /** `dxfs[i]` → resolved `ReadStyle` (font `bold`/`italic`/`color` + `fill` only) — only when `withStyles` was set. */
+  dxfStyle: ReadStyle[]
 }
 
 /* -------------------------------------------------------------------------- */
@@ -77,6 +79,12 @@ interface ColorRef {
   theme?: number
   tint?: number
   auto?: boolean
+}
+
+/** A plain `rgb` attribute value (6 or 8 hex digits) → 8-digit ARGB, uppercased. */
+function normalizeRgb(rgb: string): string {
+  const upper = rgb.toUpperCase()
+  return upper.length === 6 ? `FF${upper}` : upper
 }
 
 function colorRef(attrs: Record<string, string>): ColorRef | undefined {
@@ -188,14 +196,21 @@ export function parseStyleSheet(xml: string, options: ParseStyleOptions): StyleS
 
   const colors = new ColorResolver(parseTheme(options.themeXml))
 
+  const dxfStyle: ReadStyle[] = []
+
   // section flags
-  let sec: '' | 'fonts' | 'fills' | 'borders' | 'cellXfs' = ''
+  let sec: '' | 'fonts' | 'fills' | 'borders' | 'cellXfs' | 'dxfs' = ''
   let curFont: ReadFont | null = null
   let curFill: string | undefined
   let curFillIsSolid = false
   let curBorder: NonNullable<ReadStyle['border']> | null = null
   let curEdge: keyof NonNullable<ReadStyle['border']> | null = null
   let curXf: { style: ReadStyle; applyNumberFormat: boolean } | null = null
+  // Unlike the indexed fonts/fills pools above, a <dxf>'s <font>/<fill> are inline —
+  // built directly into a ReadStyle as we go, no id-based lookup.
+  let curDxf: ReadStyle | null = null
+  let inDxfFont = false
+  let inDxfFill = false
 
   const codeFor = (id: number): string | undefined => customCode.get(id) ?? BUILTIN_CODE[id]
 
@@ -221,6 +236,9 @@ export function parseStyleSheet(xml: string, options: ParseStyleOptions): StyleS
           return
         case 'cellXfs':
           sec = 'cellXfs'
+          return
+        case 'dxfs':
+          sec = 'dxfs'
           return
       }
 
@@ -299,11 +317,28 @@ export function parseStyleSheet(xml: string, options: ParseStyleOptions): StyleS
             if (Object.keys(a).length) curXf.style.align = a
           }
           break
+        case 'dxfs':
+          if (ln === 'dxf') {
+            curDxf = {}
+          } else if (curDxf) {
+            if (ln === 'font') inDxfFont = true
+            else if (ln === 'fill') inDxfFill = true
+            else if (inDxfFont) {
+              curDxf.font = curDxf.font ?? {}
+              if (ln === 'b') curDxf.font.bold = true
+              else if (ln === 'i') curDxf.font.italic = true
+              else if (ln === 'u') curDxf.font.underline = true
+              else if (ln === 'color' && attrs.rgb) curDxf.font.color = normalizeRgb(attrs.rgb)
+            } else if (inDxfFill && (ln === 'bgColor' || ln === 'fgColor') && attrs.rgb) {
+              curDxf.fill = normalizeRgb(attrs.rgb)
+            }
+          }
+          break
       }
     },
     onClose(name) {
       const ln = localName(name)
-      if (ln === 'fonts' || ln === 'fills' || ln === 'borders' || ln === 'cellXfs') {
+      if (ln === 'fonts' || ln === 'fills' || ln === 'borders' || ln === 'cellXfs' || ln === 'dxfs') {
         sec = ''
         return
       }
@@ -312,7 +347,7 @@ export function parseStyleSheet(xml: string, options: ParseStyleOptions): StyleS
       if (ln === 'font' && curFont) {
         fonts.push(curFont)
         curFont = null
-      } else if (ln === 'fill') {
+      } else if (ln === 'fill' && sec === 'fills') {
         fills.push(curFill)
       } else if (ln === 'border' && curBorder) {
         borders.push(curBorder)
@@ -323,9 +358,16 @@ export function parseStyleSheet(xml: string, options: ParseStyleOptions): StyleS
       } else if (ln === 'xf' && curXf) {
         xfStyle.push(curXf.style)
         curXf = null
+      } else if (sec === 'dxfs' && ln === 'font') {
+        inDxfFont = false
+      } else if (sec === 'dxfs' && ln === 'fill') {
+        inDxfFill = false
+      } else if (ln === 'dxf' && curDxf) {
+        dxfStyle.push(curDxf)
+        curDxf = null
       }
     },
   })
 
-  return { xfNumFmtId, customCode, xfStyle }
+  return { xfNumFmtId, customCode, xfStyle, dxfStyle }
 }
