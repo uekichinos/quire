@@ -2,7 +2,7 @@
 
 All notable changes to `@uekichinos/quire` are documented here.
 
-## [Unreleased]
+## [0.6.0] - 2026-09-27
 
 Sheet-scoped defined names, custom-formula + time data validation, icon-set +
 top/bottom-N conditional formats, row/column outline (grouping), and
