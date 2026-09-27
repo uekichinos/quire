@@ -103,6 +103,18 @@ back.sheet('Sales').values() // [['Product', 'Revenue', 'Updated'], ['Widget', 1
 The full write API is in [Writing](#writing); the full read API is in
 [Reading](#reading).
 
+**More examples, graduated by complexity, runnable end to end:**
+
+| | Covers |
+|---|---|
+| [`examples/1-basic.mjs`](./examples/1-basic.mjs) | Typed cells, styling, a formula, write + read back |
+| [`examples/2-medium.mjs`](./examples/2-medium.mjs) | Merges, freeze panes, auto-filter, data validation, conditional formatting, hyperlinks, a defined name, print setup |
+| [`examples/3-advanced.mjs`](./examples/3-advanced.mjs) | Streaming writer, protection with an unlocked column, outline/grouping, icon-set + top10 conditional formats, rich text, a comment, custom-formula validation |
+
+Run any of them with `node examples/N-name.mjs` after `pnpm build`; each
+writes its output to `examples/output/` (checked in, so you can also just
+open the `.xlsx` files directly without running anything).
+
 ## Writing
 
 ### Workbook and worksheet
