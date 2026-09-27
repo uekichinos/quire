@@ -329,4 +329,4 @@ First release. A dependency-light `.xlsx` **writer** — one runtime dependency
 
 ### Not included (by design)
 Reading `.xlsx`, images, charts, pivot tables, data validation, conditional
-formatting, rich text, a streaming writer, `.xls` / `.xlsb`. See `PLAN.md`.
+formatting, rich text, a streaming writer, `.xls` / `.xlsb`.

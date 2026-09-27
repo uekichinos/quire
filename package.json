@@ -52,7 +52,6 @@
     "dist/*.d.cts",
     "dist/*.global.js",
     "CHANGELOG.md",
-    "SECURITY.md",
     "NOTICE",
     "LICENSE"
   ],

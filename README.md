@@ -255,8 +255,6 @@ and/or the workbook window.
 style is interned once. Cell style merges over row style over column style, one
 nested level deep.
 
-Run `node examples/hello.mjs` (after `pnpm build`) for a full example.
-
 ## Reading (`0.2.0`)
 
 ```js
@@ -362,8 +360,7 @@ password-protected sheets/workbooks (protection state reads fine — the
 password itself isn't verified or reproduced, since quire has no way to
 verify Excel's legacy password hash against a real Excel instance). Reading is
 aimed at files from mainstream tools (Excel, Google Sheets, LibreOffice,
-`openpyxl`, `exceljs`, quire) — not corrupt files or every vendor quirk. See
-[`PLAN-READER.md`](./PLAN-READER.md).
+`openpyxl`, `exceljs`, quire) — not corrupt files or every vendor quirk.
 
 ## Streaming reader
 
@@ -397,9 +394,9 @@ interruptible mid-parse.
 
 `quire` is **not** a drop-in ExcelJS replacement. The **writer** covers the
 common "export a styled spreadsheet" case; the **reader** covers "import the
-values from a normal `.xlsx`". Out of scope for both (see [`PLAN.md`](./PLAN.md)
-and [`PLAN-READER.md`](./PLAN-READER.md)): images, charts, pivot tables,
-`.xls` / `.xlsb`.
+values from a normal `.xlsx`". Out of scope for both, permanently: images,
+charts, pivot tables, tables (`ListObject`), VBA macros (`.xlsm`), threaded
+(modern) comments, password-protected sheets/workbooks, `.xls` / `.xlsb`.
 
 ## Streaming writer
 
